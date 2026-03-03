@@ -4,10 +4,7 @@ import sys
 import urllib.parse
 from pathlib import Path
 
-if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from src.drives.find_usb import find_usb
+from rufus_py.drives.find_usb import find_usb
 
 def launch_gui_with_usb_data() -> None:
     usb_devices = find_usb()

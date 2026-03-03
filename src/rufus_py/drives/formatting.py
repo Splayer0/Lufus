@@ -1,11 +1,8 @@
 import subprocess
 import sys
-### TEMPORARY IMPORT SOLUTION ###
 from pathlib import Path
-if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from src.drives import states
-from src.drives import find_usb as fu
+from rufus_py.drives import states
+from rufus_py.drives import find_usb as fu
 #######
 
 def pkexecNotFound():

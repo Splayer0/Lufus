@@ -11,12 +11,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
-# gets imports from /drives
-if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from src.drives import states
-from src.drives import formatting
+from rufus_py.drives import states
+from rufus_py.drives import formatting
 
 
 class LogWindow(QDialog):
