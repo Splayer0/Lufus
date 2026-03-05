@@ -284,7 +284,7 @@ class Rufus(QMainWindow):
         lbl_image = QLabel("Image option")
         lbl_image.setStyleSheet("font-weight: normal; font-size: 9pt; padding-bottom: 2px;")
         self.combo_image_option = QComboBox()
-        #self.combo_image_option.addItem("Standard Windows installation")
+        self.combo_image_option.addItem("Standard Windows installation")
         #self.combo_image_option.addItem("Windows To Go")
         self.combo_image_option.addItem("Standard Linux")
         self.combo_image_option.currentTextChanged.connect(self.update_image_option)
@@ -458,6 +458,8 @@ class Rufus(QMainWindow):
         self.setStatusBar(self.statusBar)
         self.statusBar.showMessage("", 0)
 
+
+
     def updateFS(self):
         states.currentFS = self.combo_fs.currentIndex()
         # print(f"Global state updated to: {states.currentFS}")
@@ -468,15 +470,17 @@ class Rufus(QMainWindow):
         self._update_filesystem_options()
     
     def _update_filesystem_options(self):
-        selected_image = self.combo_image_option.currentText()
+        states.image_option = self.combo_image_option.currentText()
         self.combo_fs.blockSignals(True)
-        if selected_image == "Standard Linux":
+        if states.image_option == "Standard Linux":
             self.combo_fs.clear()
             self.combo_fs.addItem("UDF")
+            print("UDF Only")
         else:
             self.combo_fs.clear()
             self.combo_fs.addItems(self.all_fs_options)
             self.combo_fs.setCurrentText("NTFS")
+            print("Every")
         self.combo_fs.blockSignals(False)
         self.updateFS()
 
