@@ -3,7 +3,6 @@ import shutil
 import subprocess
 
 
-
 def flash_woeusb(device: str, iso_path: str, progress_cb=None, status_cb=None) -> bool:
     def _emit(pct: int):
         if progress_cb:
@@ -17,7 +16,7 @@ def flash_woeusb(device: str, iso_path: str, progress_cb=None, status_cb=None) -
     woeusb_args = [
         "sudo",
         "woeusb",
-        "--device",     
+        "--device",
         iso_path,
         device,
     ]
@@ -28,7 +27,7 @@ def flash_woeusb(device: str, iso_path: str, progress_cb=None, status_cb=None) -
         process = subprocess.Popen(
             woeusb_args,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  
+            stderr=subprocess.STDOUT,
         )
 
         buf = b""
@@ -41,7 +40,7 @@ def flash_woeusb(device: str, iso_path: str, progress_cb=None, status_cb=None) -
 
             # Split on both \r and \n so in-place updates (\r) are handled
             parts = re.split(rb"[\r\n]", buf)
-            buf = parts[-1] 
+            buf = parts[-1]
 
             for line in parts[:-1]:
                 line = line.strip()

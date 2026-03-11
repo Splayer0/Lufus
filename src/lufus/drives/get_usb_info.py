@@ -22,8 +22,7 @@ def GetUSBInfo(usb_path) -> dict:
         # Check if USB size is greater than 32GB
         # Use -b for a reliable integer (bytes) instead of human-readable output
         size_output = subprocess.check_output(
-            ["lsblk", "-d", "-n", "-b", "-o", "SIZE", device_node],
-            text=True, timeout=5
+            ["lsblk", "-d", "-n", "-b", "-o", "SIZE", device_node], text=True, timeout=5
         ).strip()
 
         if not size_output.isdigit():
@@ -31,20 +30,20 @@ def GetUSBInfo(usb_path) -> dict:
             usb_size = 0
         else:
             usb_size = int(size_output)
-        
+
         if usb_size > 32 * 1024**3:  # 32GB in bytes
-            print(f"USB device is large, does user want to actually flash this?: {usb_size} bytes (passed 32 GB threshold)")
-        
+            print(
+                f"USB device is large, does user want to actually flash this?: {usb_size} bytes (passed 32 GB threshold)"
+            )
+
         # Get the label of the USB device
-        label = subprocess.check_output(["lsblk", "-d", "-n", "-o", "LABEL", device_node], text=True, timeout=5).strip()
+        label = subprocess.check_output(
+            ["lsblk", "-d", "-n", "-o", "LABEL", device_node], text=True, timeout=5
+        ).strip()
         if not label:  # If no label, use directory name
             label = os.path.basename(usb_path)
-        
-        usb_info = {
-            "device_node": device_node,
-            "label": label,
-            "mount_path": usb_path
-        }
+
+        usb_info = {"device_node": device_node, "label": label, "mount_path": usb_path}
         print(f"USB Info: {usb_info}")
         return usb_info
     except PermissionError:

@@ -7,7 +7,7 @@ from lufus.drives import states
 
 ### USB RECOGNITION ###
 def find_usb():
-    usbdict = {}    # DICTIONARY WHERE USB MOUNT PATH IS KEY AND LABEL IS VALUE
+    usbdict = {}  # DICTIONARY WHERE USB MOUNT PATH IS KEY AND LABEL IS VALUE
 
     # Get current username
     username = getpass.getuser()
@@ -20,7 +20,9 @@ def find_usb():
     for path in paths:
         if os.path.exists(path) and os.path.isdir(path):
             try:
-                directories = [d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))]
+                directories = [
+                    d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))
+                ]
                 all_directories.extend([os.path.join(path, d) for d in directories])
             except PermissionError:
                 print(f"Permission denied accessing {path}")
@@ -38,7 +40,8 @@ def find_usb():
                     try:
                         label = subprocess.check_output(
                             ["lsblk", "-d", "-n", "-o", "LABEL", device_node],
-                            text=True, timeout=5
+                            text=True,
+                            timeout=5,
                         ).strip()
                         if not label:
                             label = os.path.basename(mount_path)
@@ -65,7 +68,9 @@ def find_DN():
     for path in paths:
         if os.path.exists(path) and os.path.isdir(path):
             try:
-                directories = [d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))]
+                directories = [
+                    d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))
+                ]
                 all_directories.extend([os.path.join(path, d) for d in directories])
             except PermissionError:
                 print(f"Permission denied accessing {path}")

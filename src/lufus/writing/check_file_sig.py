@@ -10,6 +10,7 @@ def _is_valid_sha256_hex(hash_value: str) -> bool:
         return False
     return all(char in "0123456789abcdef" for char in normalized)
 
+
 def check_iso_signature(file_path: str) -> bool:
     """
     Validate ISO9660 Primary Volume Descriptor at sector 16.
@@ -31,23 +32,30 @@ def check_iso_signature(file_path: str) -> bool:
             f.seek(32768)
             data = f.read(7)
             if len(data) < 7:
-                print(f"ISO signature check: file too small to contain a PVD (read {len(data)} bytes at offset 32768, need 7)")
+                print(
+                    f"ISO signature check: file too small to contain a PVD (read {len(data)} bytes at offset 32768, need 7)"
+                )
                 return False
 
             vd_type, ident, version = data[0], data[1:6], data[6]
-            print(f"ISO signature check: PVD bytes -> type=0x{vd_type:02X}, ident={ident}, version=0x{version:02X}")
+            print(
+                f"ISO signature check: PVD bytes -> type=0x{vd_type:02X}, ident={ident}, version=0x{version:02X}"
+            )
 
             if vd_type == 0x01 and ident == b"CD001" and version == 0x01:
                 print(f"ISO signature check: PASSED for {file_path}")
                 return True
             else:
-                print(f"ISO signature check: FAILED - expected type=0x01/ident=CD001/version=0x01, "
-                      f"got type=0x{vd_type:02X}/ident={ident}/version=0x{version:02X}")
+                print(
+                    f"ISO signature check: FAILED - expected type=0x01/ident=CD001/version=0x01, "
+                    f"got type=0x{vd_type:02X}/ident={ident}/version=0x{version:02X}"
+                )
                 return False
     except OSError as err:
         print(f"ISO signature check: OSError reading {file_path}: {err}")
 
     return False
+
 
 def _parent_block_device(device_node: str) -> str | None:
     dev_name = os.path.basename(device_node)
@@ -69,7 +77,9 @@ def _resolve_device_node(usb_mount_path: str) -> str | None:
     for part in psutil.disk_partitions(all=True):
         if os.path.normpath(part.mountpoint) == normalized:
             result = _parent_block_device(part.device) or part.device
-            print(f"Resolved {normalized} -> device={part.device}, raw block device={result}")
+            print(
+                f"Resolved {normalized} -> device={part.device}, raw block device={result}"
+            )
             return result
     print(f"Could not resolve device node for: {normalized}")
     return None
@@ -105,11 +115,15 @@ def check_sha256(file_path: str, expected_hash: str) -> bool:
             print(f"SHA256 check: MATCH for {file_path}")
             return True
         else:
-            print(f"SHA256 check: MISMATCH for {file_path} - file may be corrupted or tampered with")
+            print(
+                f"SHA256 check: MISMATCH for {file_path} - file may be corrupted or tampered with"
+            )
             return False
     except OSError as err:
         print(f"SHA256 check: OSError reading {file_path}: {err}")
 
     return False
+
+
 # to the person that reads this: may you have a good day <3
 # love, koyo

@@ -29,6 +29,7 @@ def _get_raw_device(drive: str) -> str:
         return m.group(1)
     return drive
 
+
 #######
 
 
@@ -43,14 +44,20 @@ def _get_mount_and_drive():
 
 
 def pkexecNotFound():
-    print("Error: The command pkexec or labeling software was not found on your system.")
+    print(
+        "Error: The command pkexec or labeling software was not found on your system."
+    )
 
 
 def FormatFail():
     print("Error: Formatting failed. Was the password correct? Is the drive unmounted?")
 
+
 def UnmountFail():
-    print("Error: Unmounting failed. Perhaps either the drive was already unmounted or is in use.")
+    print(
+        "Error: Unmounting failed. Perhaps either the drive was already unmounted or is in use."
+    )
+
 
 def unexpected():
     print("An unexpected error occurred")
@@ -186,11 +193,17 @@ def checkdevicebadblock():
             if probed.isdigit():
                 logical_block_size = int(probed)
             else:
-                print(f"Warning: Unexpected blockdev output for {drive!r}: {probed!r}. Using default.")
+                print(
+                    f"Warning: Unexpected blockdev output for {drive!r}: {probed!r}. Using default."
+                )
         else:
-            print(f"Warning: blockdev failed for {drive} (exit {probe.returncode}). Using default block size.")
+            print(
+                f"Warning: blockdev failed for {drive} (exit {probe.returncode}). Using default block size."
+            )
     except Exception as exc:
-        print(f"Warning: Could not probe sector size for {drive}: {exc}. Using default block size.")
+        print(
+            f"Warning: Could not probe sector size for {drive}: {exc}. Using default block size."
+        )
 
     # -s = show progress, -v = verbose output
     # -n = non-destructive read-write test (safe default)
@@ -199,7 +212,9 @@ def checkdevicebadblock():
         args.append("-n")  # non-destructive read-write
     args.append(drive)
 
-    print(f"Checking {drive} for bad blocks ({passes} pass(es), block size {logical_block_size})...")
+    print(
+        f"Checking {drive} for bad blocks ({passes} pass(es), block size {logical_block_size})..."
+    )
     try:
         result = subprocess.run(args, capture_output=True, text=True)
         output = result.stdout + result.stderr
@@ -253,7 +268,9 @@ def dskformat():
             unexpected()
     elif fs_type == 1:
         try:
-            subprocess.run(["mkfs.vfat", "-s", str(sectors), "-F", "32", drive], check=True)
+            subprocess.run(
+                ["mkfs.vfat", "-s", str(sectors), "-F", "32", drive], check=True
+            )
             print("success format to fat32!")
         except FileNotFoundError:
             pkexecNotFound()
@@ -312,7 +329,9 @@ def _apply_partition_scheme(drive: str):
                 ["parted", "-s", raw_device, "mkpart", "primary", "1MiB", "100%"],
                 check=True,
             )
-        print(f"Partition scheme {'GPT' if scheme == 0 else 'MBR'} applied to {raw_device}")
+        print(
+            f"Partition scheme {'GPT' if scheme == 0 else 'MBR'} applied to {raw_device}"
+        )
     except FileNotFoundError:
         print("Error: 'parted' not found. Install parted.")
     except subprocess.CalledProcessError as e:

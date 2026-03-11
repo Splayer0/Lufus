@@ -7,19 +7,21 @@ from pathlib import Path
 from lufus.drives.find_usb import find_usb
 import site
 
+
 def ensure_root():
     # this function checks for x11 or wayland and asks for root perms
-    # it also fixes any display issues that might happen due to wrong perm management 
+    # it also fixes any display issues that might happen due to wrong perm management
     if os.geteuid() != 0:
         print("Need admin rights. Spawning pkexec...")
         gui_env = {
             "DISPLAY": os.environ.get("DISPLAY"),
-            "XAUTHORITY": os.environ.get("XAUTHORITY") or os.path.expanduser("~/.Xauthority"),
+            "XAUTHORITY": os.environ.get("XAUTHORITY")
+            or os.path.expanduser("~/.Xauthority"),
             "WAYLAND_DISPLAY": os.environ.get("WAYLAND_DISPLAY"),
             "XDG_RUNTIME_DIR": os.environ.get("XDG_RUNTIME_DIR"),
             # THIS IS THE FIX: Pass the current PATH so Bedrock can find all strata commands
             "PATH": os.environ.get("PATH"),
-            "PYTHONPATH": os.environ.get("PYTHONPATH", "")
+            "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
         }
         env_args = ["env"]
         for key, value in gui_env.items():
@@ -27,6 +29,7 @@ def ensure_root():
                 env_args.append(f"{key}={value}")
         cmd = ["pkexec"] + env_args + [sys.executable] + sys.argv
         os.execvp("pkexec", cmd)
+
 
 def launch_gui_with_usb_data() -> None:
     ensure_root()

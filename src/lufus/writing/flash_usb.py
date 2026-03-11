@@ -11,10 +11,14 @@ from lufus.writing.flash_woeusb import flash_woeusb
 
 
 def pkexecNotFound():
-    print("Error: The command pkexec or labeling software was not found on your system.")
+    print(
+        "Error: The command pkexec or labeling software was not found on your system."
+    )
+
 
 def FormatFail():
     print("Error: Formatting failed. Was the password correct? Is the drive unmounted?")
+
 
 def unexpected():
     print("An unexpected error occurred")
@@ -51,14 +55,16 @@ def FlashUSB(iso_path, raw_device, progress_cb=None, status_cb=None) -> bool:
             if states.currentflash == 0:
                 _status("Routing to flash_windows (ISO mode)")
                 return flash_windows(
-                    raw_device, iso_path,
+                    raw_device,
+                    iso_path,
                     progress_cb=progress_cb,
                     status_cb=status_cb,
                 )
             elif states.currentflash == 1:
                 _status("Routing to flash_woeusb (WoeUSB mode)")
                 return flash_woeusb(
-                    raw_device, iso_path,
+                    raw_device,
+                    iso_path,
                     progress_cb=progress_cb,
                     status_cb=status_cb,
                 )
@@ -75,9 +81,13 @@ def FlashUSB(iso_path, raw_device, progress_cb=None, status_cb=None) -> bool:
         ]
 
         _status(f"Spawning dd: {' '.join(dd_args)}")
-        _status(f"Writing {iso_size:,} bytes to {raw_device}, this may take several minutes...")
+        _status(
+            f"Writing {iso_size:,} bytes to {raw_device}, this may take several minutes..."
+        )
 
-        process = subprocess.Popen(dd_args, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL)
+        process = subprocess.Popen(
+            dd_args, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL
+        )
         _status(f"dd process started with PID {process.pid}")
 
         buf = b""
@@ -98,7 +108,9 @@ def FlashUSB(iso_path, raw_device, progress_cb=None, status_cb=None) -> bool:
                     bytes_done = int(m.group(1))
                     pct = min(int(bytes_done * 100 / iso_size), 99)
                     if pct != last_pct:
-                        _status(f"dd progress: {bytes_done:,} / {iso_size:,} bytes ({pct}%)")
+                        _status(
+                            f"dd progress: {bytes_done:,} / {iso_size:,} bytes ({pct}%)"
+                        )
                         last_pct = pct
                     if progress_cb:
                         progress_cb(pct)
@@ -113,5 +125,7 @@ def FlashUSB(iso_path, raw_device, progress_cb=None, status_cb=None) -> bool:
         return True
 
     except subprocess.CalledProcessError as e:
-        _status(f"Flash failed with CalledProcessError: returncode={e.returncode}, cmd={e.cmd}")
+        _status(
+            f"Flash failed with CalledProcessError: returncode={e.returncode}, cmd={e.cmd}"
+        )
         return False
