@@ -32,3 +32,8 @@ Thumbs.db
 # Logs
 *.log
 /.vs
+
+# :3 :3 :3 :3
+*.AppImage
+AppDir
+*.spec
