@@ -1,101 +1,263 @@
-import subprocess
+import hashlib
 import os
-import glob
-import tempfile
 import re
-from lufus.drives import states
+import shutil
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+
 from lufus.lufus_logging import get_logger
 
 log = get_logger(__name__)
 
+FAT32_MAX_FILE_SIZE = 4 * 1024 * 1024 * 1024 - 1
+WIM_SPLIT_SIZE_MB = 3800
+EFI_LABEL = "WINSTALL"
 
-def run(cmd):
+
+def run(cmd, capture_output: bool = False):
     log.debug("run: %s", cmd)
-    subprocess.run(cmd, check=True)
+    return subprocess.run(
+        cmd,
+        check=True,
+        text=True,
+        capture_output=capture_output,
+    )
 
 
-def _get_wim_size(data_mount: str) -> int:
-    """Return size in bytes of install.wim/esd, or 0 if not found."""
-    sources_dir = os.path.join(data_mount, "sources")
-    for entry in glob.glob(os.path.join(sources_dir, "*")):
-        if os.path.basename(entry).lower() in ("install.wim", "install.esd"):
-            size = os.path.getsize(entry)
-            log.info("Found %s (%d bytes / %.2f GiB)", entry, size, size / (1024**3))
-            return size
-    log.warning("install.wim/install.esd not found in data partition sources/")
-    return 0
+def _find_command(*names: str) -> str | None:
+    for name in names:
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
 
 
-def _find_path_case_insensitive(base, *parts):
-    current = [base]
+def _require_command(*names: str) -> str:
+    path = _find_command(*names)
+    if path:
+        return path
+    raise FileNotFoundError(f"Required command not found: one of {', '.join(names)}")
+
+
+def _find_path_case_insensitive(base: str, *parts: str) -> str | None:
+    current = base
     for part in parts:
-        next_level = []
-        for c in current:
-            next_level += [
-                p
-                for p in glob.glob(os.path.join(c, "*"))
-                if os.path.basename(p).lower() == part.lower()
-            ]
-        current = next_level
-    result = current[0] if current else None
-    return result
+        try:
+            entries = os.listdir(current)
+        except OSError:
+            return None
+
+        match = None
+        for entry in entries:
+            if entry.lower() == part.lower():
+                match = os.path.join(current, entry)
+                break
+
+        if match is None:
+            return None
+
+        current = match
+
+    return current
 
 
-def _fix_efi_bootloader(efi_mount):
-    """
-    Ensure /EFI/BOOT/BOOTX64.EFI exists - required by UEFI spec.
-    Windows ISOs put the bootloader at efi/microsoft/boot/efisys.bin
-    but UEFI firmware looks for /EFI/BOOT/BOOTX64.EFI as fallback.
-    """
-    log.info("EFI bootloader fix: checking %s", efi_mount)
-    found_boot_dir = _find_path_case_insensitive(efi_mount, "EFI", "BOOT")
-    boot_dir = found_boot_dir or os.path.join(efi_mount, "EFI", "BOOT")
-    existing_bootx64 = _find_path_case_insensitive(
-        efi_mount, "EFI", "BOOT", "BOOTX64.EFI"
+def _wait_for_path(path: str, timeout: float = 10.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if os.path.exists(path):
+            return True
+        time.sleep(0.2)
+    return os.path.exists(path)
+
+
+def _sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_file_pair(src: str, dst: str, label: str, status_cb=None) -> None:
+    src_hash = _sha256(src)
+    dst_hash = _sha256(dst)
+
+    msg = f"Verifying {label}: source={src_hash} target={dst_hash}"
+    log.info(msg)
+    if status_cb:
+        status_cb(msg)
+
+    if src_hash != dst_hash:
+        raise IOError(f"Verification failed for {label}: {src} != {dst}")
+
+
+def _copy_file(src: str, dst: str) -> None:
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+
+    with open(src, "rb") as in_fh, open(dst, "wb") as out_fh:
+        while True:
+            chunk = in_fh.read(8 * 1024 * 1024)
+            if not chunk:
+                break
+            out_fh.write(chunk)
+
+        out_fh.flush()
+        os.fsync(out_fh.fileno())
+
+    try:
+        shutil.copystat(src, dst, follow_symlinks=False)
+    except OSError:
+        pass
+
+
+def _build_copy_manifest(iso_root: str, split_root: str | None):
+    manifest = []
+
+    for dirpath, dirnames, filenames in os.walk(iso_root):
+        dirnames.sort()
+        filenames.sort()
+
+        for filename in filenames:
+            src = os.path.join(dirpath, filename)
+            rel = os.path.relpath(src, iso_root)
+            rel_norm = rel.replace("\\", "/").lower()
+
+            # Skip the original large install image if we split it.
+            if split_root and rel_norm in ("sources/install.wim", "sources/install.esd"):
+                continue
+
+            size = os.path.getsize(src)
+            manifest.append((src, rel, size))
+
+    if split_root:
+        for dirpath, dirnames, filenames in os.walk(split_root):
+            dirnames.sort()
+            filenames.sort()
+
+            for filename in filenames:
+                src = os.path.join(dirpath, filename)
+                rel = os.path.relpath(src, split_root)
+                size = os.path.getsize(src)
+                manifest.append((src, rel, size))
+
+    return manifest
+
+
+def _copy_manifest(
+    manifest,
+    dst_root: str,
+    progress_cb=None,
+    base_pct: int = 35,
+    span_pct: int = 55,
+):
+    total_bytes = sum(size for _, _, size in manifest)
+    copied = 0
+    last_pct = -1
+
+    for src, rel, size in manifest:
+        dst = os.path.join(dst_root, rel)
+        _copy_file(src, dst)
+        copied += size
+
+        if progress_cb and total_bytes > 0:
+            pct = base_pct + int((copied / total_bytes) * span_pct)
+            pct = min(pct, base_pct + span_pct)
+            if pct != last_pct:
+                progress_cb(pct)
+                last_pct = pct
+
+
+def _find_install_image(root: str) -> str | None:
+    sources_dir = _find_path_case_insensitive(root, "sources")
+    if not sources_dir:
+        return None
+
+    for name in ("install.wim", "install.esd"):
+        candidate = _find_path_case_insensitive(sources_dir, name)
+        if candidate:
+            return candidate
+
+    return None
+
+
+def _find_boot_wim(root: str) -> str | None:
+    return _find_path_case_insensitive(root, "sources", "boot.wim")
+
+
+def _prepare_split_install_image(
+    install_image: str,
+    stage_root: str,
+    status_cb=None,
+) -> tuple[str, list[str]]:
+    wimlib = _require_command("wimlib-imagex")
+
+    stage_sources = os.path.join(stage_root, "sources")
+    os.makedirs(stage_sources, exist_ok=True)
+
+    split_base = os.path.join(stage_sources, "install.swm")
+
+    message = (
+        f"Splitting {os.path.basename(install_image)} because it exceeds FAT32's 4 GiB limit..."
     )
-    if existing_bootx64:
-        log.info("EFI bootloader fix: BOOTX64.EFI already present at %s", existing_bootx64)
-        return
+    log.info(message)
+    if status_cb:
+        status_cb(message)
 
-    log.info(
-        "EFI bootloader fix: BOOTX64.EFI not found, will attempt to create at %s", boot_dir
-    )
-    bootx64 = os.path.join(boot_dir, "BOOTX64.EFI")
-    run(["sudo", "mkdir", "-p", boot_dir])
-    log.info("EFI bootloader fix: created directory %s", boot_dir)
+    run([wimlib, "split", install_image, split_base, str(WIM_SPLIT_SIZE_MB)])
 
-    src = _find_path_case_insensitive(
-        efi_mount, "EFI", "Microsoft", "Boot", "bootmgfw.efi"
-    )
-    if src:
-        run(["sudo", "cp", src, bootx64])
-        log.info("EFI bootloader fix: copied %s -> %s", src, bootx64)
-        return
+    split_parts = sorted(str(path) for path in Path(stage_sources).glob("install*.swm"))
+    if not split_parts:
+        raise FileNotFoundError(
+            "wimlib-imagex reported success but no install*.swm files were produced"
+        )
 
-    log.warning(
-        "EFI bootloader fix: could not find bootmgfw.efi, UEFI boot may fail"
+    return stage_root, split_parts
+
+
+def _mount_vfat_partition(device_part: str, mountpoint: str) -> None:
+    uid = os.getuid()
+    gid = os.getgid()
+
+    run(
+        [
+            "sudo",
+            "mount",
+            "-t",
+            "vfat",
+            "-o",
+            f"uid={uid},gid={gid},umask=022,shortname=mixed,utf8=1",
+            device_part,
+            mountpoint,
+        ]
     )
+
+
+def _mount_iso(iso_path: str, mountpoint: str) -> None:
+    run(["sudo", "mount", "-o", "loop,ro", iso_path, mountpoint])
 
 
 def flash_windows(device: str, iso: str, progress_cb=None, status_cb=None) -> bool:
     if not re.match(r"^/dev/(sd[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)$", device):
         raise ValueError(f"Invalid device path: {device}")
 
-    def _emit(pct):
+    def _emit(pct: int):
         if progress_cb:
             progress_cb(pct)
 
-    def _status(msg):
+    def _status(msg: str):
         log.info(msg)
         if status_cb:
             status_cb(msg)
 
-    _status(f"flash_windows: starting for device={device}, iso={iso}")
+    _status(
+        f"flash_windows: starting UEFI-only Windows media creation for device={device}, iso={iso}"
+    )
 
     try:
         iso_size = os.path.getsize(iso)
     except OSError as e:
-        log.error("flash_windows: cannot read ISO file: %s", e)
         _status(f"flash_windows: cannot read ISO file: {e}")
         return False
 
@@ -104,185 +266,181 @@ def flash_windows(device: str, iso: str, progress_cb=None, status_cb=None) -> bo
     )
 
     try:
+        _require_command("sfdisk")
+        _require_command("wipefs")
+        _require_command("partprobe")
+        _require_command("udevadm")
+        _require_command("mkfs.vfat")
+        _require_command("mount")
+        _require_command("umount")
+    except FileNotFoundError as e:
+        _status(str(e))
+        return False
+
+    try:
         with (
-            tempfile.TemporaryDirectory() as mount_efi,
-            tempfile.TemporaryDirectory() as mount_data,
-            tempfile.TemporaryDirectory() as host_extract,
+            tempfile.TemporaryDirectory(prefix="lufus_iso_") as mount_iso,
+            tempfile.TemporaryDirectory(prefix="lufus_usb_") as mount_usb,
+            tempfile.TemporaryDirectory(prefix="lufus_stage_") as stage_root,
         ):
-            _status(
-                f"flash_windows: temp dirs -> EFI mount={mount_efi}, data mount={mount_data}, extract={host_extract}"
-            )
-
-            _status(f"Wiping existing partition table on {device}...")
-            run(["sudo", "wipefs", "-a", device])
-            _emit(8)
-
-            p_prefix = "p" if "nvme" in device or "mmcblk" in device else ""
-            efi = f"{device}{p_prefix}1"
-            data = f"{device}{p_prefix}2"
-
-            scheme = getattr(states, "partition_scheme", 0)
-            if scheme == 0:
-                sfdisk_script = f"""label: gpt
-device: {device}
-{efi} : size=512M, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
-{data} : type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7
-"""
-                scheme_name = "GPT"
-            else:
-                sfdisk_script = f"""label: dos
-device: {device}
-{efi} : size=512M, type=ef, bootable
-{data} : type=7
-"""
-                scheme_name = "MBR"
-
-            _status(
-                f"Writing {scheme_name} partition table to {device}: 512MiB EFI (FAT32) + remainder data (NTFS)..."
-            )
-            subprocess.run(
-                ["sudo", "sfdisk", device], input=sfdisk_script.encode(), check=True
-            )
-            run(["sudo", "partprobe", device])
-            _status("partprobe notified kernel of new partition table")
-            run(["sudo", "udevadm", "settle"])
-            _status("udevadm settled")
-            _emit(15)
-
-            _status(f"Partitions: EFI={efi}, data={data}")
-
-            _status(f"Formatting {efi} as FAT32 with label BOOT...")
-            run(["sudo", "mkfs.vfat", "-F32", "-n", "BOOT", efi])
-            _status(f"Formatting {data} as NTFS with label WINDOWS...")
-            ntfs_cmd = None
-            for candidate in ["mkfs.ntfs", "mkntfs"]:
-                if subprocess.run(["which", candidate], capture_output=True).returncode == 0:
-                    ntfs_cmd = candidate
-                    break
-            if ntfs_cmd is None:
-                log.warning("ntfs-3g not found, attempting to install...")
-                _status("ntfs-3g not found, attempting to install...")
-                pkg_managers = [
-                    ["apt-get", "install", "-y", "ntfs-3g"],
-                    ["dnf", "install", "-y", "ntfs-3g"],
-                    ["pacman", "-S", "--noconfirm", "ntfs-3g"],
-                    ["zypper", "install", "-y", "ntfs-3g"],
-                ]
-                for pm_cmd in pkg_managers:
-                    if subprocess.run(["which", pm_cmd[0]], capture_output=True).returncode == 0:
-                        subprocess.run(["sudo"] + pm_cmd, check=True)
-                        break
-                for candidate in ["mkfs.ntfs", "mkntfs"]:
-                    if subprocess.run(["which", candidate], capture_output=True).returncode == 0:
-                        ntfs_cmd = candidate
-                        break
-            if ntfs_cmd is None:
-                log.error("mkfs.ntfs / mkntfs not found. Install ntfs-3g: sudo pacman -S ntfs-3g")
-                raise FileNotFoundError("mkfs.ntfs / mkntfs not found. Install ntfs-3g: sudo pacman -S ntfs-3g")
-            run(["sudo", ntfs_cmd, "-f", "-L", "WINDOWS", data])
-            _emit(22)
-
-            _status(f"Mounting {efi} -> {mount_efi}")
-            run(["sudo", "mount", efi, mount_efi])
-            _status(f"Mounting {data} -> {mount_data}")
-            run(["sudo", "mount", data, mount_data])
+            mounted_iso = False
+            mounted_usb = False
 
             try:
-                if subprocess.run(["which", "7z"], capture_output=True).returncode != 0:
-                    log.warning("7z not found, attempting to install...")
-                    _status("7z not found, attempting to install...")
-                    pkg_managers = [
-                        ["apt-get", "install", "-y", "p7zip-full"],
-                        ["dnf", "install", "-y", "p7zip-plugins"],
-                        ["pacman", "-S", "--noconfirm", "p7zip"],
-                        ["zypper", "install", "-y", "p7zip-full"],
-                    ]
-                    for pm_cmd in pkg_managers:
-                        if subprocess.run(["which", pm_cmd[0]], capture_output=True).returncode == 0:
-                            subprocess.run(["sudo"] + pm_cmd, check=True)
-                            break
-                    if subprocess.run(["which", "7z"], capture_output=True).returncode != 0:
-                        log.error("7z not found. Install p7zip: sudo pacman -S p7zip")
-                        raise FileNotFoundError("7z not found. Install p7zip: sudo pacman -S p7zip")
-                _status(f"Extracting ISO {iso} to {host_extract} with 7z...")
-                run(["7z", "x", iso, f"-o{host_extract}", "-y"])
-                extracted = os.listdir(host_extract)
-                _status(
-                    f"Extraction complete: {len(extracted)} top-level items: {extracted}"
+                _status(f"Wiping existing partition table on {device}...")
+                run(["sudo", "wipefs", "-a", device])
+                _emit(8)
+
+                p_prefix = "p" if ("nvme" in device or "mmcblk" in device) else ""
+                part1 = f"{device}{p_prefix}1"
+
+                sfdisk_script = f"""label: gpt
+device: {device}
+unit: sectors
+
+{part1} : start=2048, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+"""
+
+                _status(f"Writing GPT with a single FAT32 EFI partition to {device}...")
+                subprocess.run(
+                    ["sudo", "sfdisk", device],
+                    input=sfdisk_script.encode(),
+                    check=True,
                 )
-                _emit(60)
+                run(["sudo", "partprobe", device])
+                run(["sudo", "udevadm", "settle"])
 
-                _status(f"Copying {len(extracted)} items to data partition {mount_data}...")
-                items = [os.path.join(host_extract, i) for i in extracted]
-                run(["sudo", "cp", "-r"] + items + [mount_data])
-                _emit(75)
+                if not _wait_for_path(part1, timeout=12.0):
+                    raise FileNotFoundError(f"Partition node did not appear: {part1}")
 
-                wim_size = _get_wim_size(mount_data)
+                _emit(18)
+
+                _status(f"Formatting {part1} as FAT32 ({EFI_LABEL})...")
+                run(["sudo", "mkfs.vfat", "-F", "32", "-n", EFI_LABEL, part1])
+                _emit(25)
+
+                _status(f"Mounting Windows ISO read-only at {mount_iso}...")
+                _mount_iso(iso, mount_iso)
+                mounted_iso = True
+
+                _status(f"Mounting USB partition at {mount_usb}...")
+                _mount_vfat_partition(part1, mount_usb)
+                mounted_usb = True
+                _emit(32)
+
+                install_image = _find_install_image(mount_iso)
+                if not install_image:
+                    raise FileNotFoundError(
+                        "Could not find sources/install.wim or sources/install.esd inside the ISO"
+                    )
+
+                install_size = os.path.getsize(install_image)
                 _status(
-                    f"install.wim/esd on data partition: {wim_size / (1024**3):.2f} GiB"
+                    f"Found install image: {install_image} ({install_size:,} bytes / {install_size / (1024**3):.2f} GiB)"
                 )
 
-                _status("Copying EFI boot files to EFI partition...")
-                efi_src = _find_path_case_insensitive(host_extract, "EFI")
-                if efi_src:
-                    efi_items = os.listdir(efi_src)
-                    _status(
-                        f"Found EFI/ directory with {len(efi_items)} items: {efi_items}"
+                split_parts = []
+                split_stage_root = None
+
+                if install_size > FAT32_MAX_FILE_SIZE:
+                    split_stage_root, split_parts = _prepare_split_install_image(
+                        install_image,
+                        stage_root,
+                        status_cb=status_cb,
                     )
-                    run(
-                        ["sudo", "cp", "-r"]
-                        + [os.path.join(efi_src, i) for i in efi_items]
-                        + [mount_efi]
-                    )
-                    _status("Copied EFI/ tree to EFI partition")
+                    _status(f"Split image created into {len(split_parts)} part(s)")
                 else:
-                    log.warning("No EFI directory found in ISO - drive may not be UEFI bootable")
-                    _status(
-                        "WARNING: No EFI directory found in ISO - drive may not be UEFI bootable"
-                    )
+                    _status("Install image fits inside FAT32; no split needed")
 
-                boot_src = _find_path_case_insensitive(host_extract, "boot")
-                if boot_src:
-                    boot_items = os.listdir(boot_src)
-                    _status(f"Found boot/ directory with {len(boot_items)} items")
-                    run(
-                        ["sudo", "cp", "-r"]
-                        + [os.path.join(boot_src, i) for i in boot_items]
-                        + [mount_efi]
-                    )
-                    _status("Copied boot/ tree to EFI partition")
-                else:
-                    _status("No boot/ directory found in ISO extract")
+                manifest = _build_copy_manifest(mount_iso, split_stage_root)
 
-                for fname in ["bootmgr", "bootmgr.efi"]:
-                    src = _find_path_case_insensitive(host_extract, fname)
-                    if src:
-                        run(["sudo", "cp", src, f"{mount_efi}/{fname}"])
-                        _status(f"Copied {fname} to EFI partition root")
-                    else:
-                        _status(f"{fname} not found in ISO extract (may be fine)")
+                for src, rel, size in manifest:
+                    rel_norm = rel.replace("\\", "/").lower()
+                    if size > FAT32_MAX_FILE_SIZE and rel_norm not in {
+                        "sources/install.wim",
+                        "sources/install.esd",
+                    }:
+                        raise ValueError(
+                            f"Cannot place {rel} on FAT32 because it exceeds 4 GiB and only install.wim/install.esd splitting is supported"
+                        )
 
-                _fix_efi_bootloader(mount_efi)
+                _status(
+                    f"Copying {len(manifest)} file(s) to USB while preserving the original Windows layout..."
+                )
+                _copy_manifest(
+                    manifest,
+                    mount_usb,
+                    progress_cb=progress_cb,
+                    base_pct=35,
+                    span_pct=52,
+                )
                 _emit(88)
 
-                _status("Syncing all writes to disk (this may take a moment)...")
-                run(["sudo", "sync"])
-                _emit(97)
-                _status("Sync complete")
-            except Exception as e:
-                log.error("flash_windows: ERROR - %s: %s", type(e).__name__, e)
-                _status(f"flash_windows: ERROR - {type(e).__name__}: {e}")
-                raise
+                boot_wim_src = _find_boot_wim(mount_iso)
+                if boot_wim_src:
+                    boot_wim_dst = _find_path_case_insensitive(
+                        mount_usb,
+                        "sources",
+                        "boot.wim",
+                    )
+                    if not boot_wim_dst:
+                        raise FileNotFoundError(
+                            "boot.wim was expected on the USB but was not found after copying"
+                        )
+
+                    _verify_file_pair(
+                        boot_wim_src,
+                        boot_wim_dst,
+                        "boot.wim",
+                        status_cb=status_cb,
+                    )
+
+                if split_parts:
+                    for split_src in split_parts:
+                        rel = os.path.relpath(split_src, split_stage_root)
+                        split_dst = os.path.join(mount_usb, rel)
+                        if not os.path.exists(split_dst):
+                            raise FileNotFoundError(f"Split file missing on USB: {split_dst}")
+
+                        _verify_file_pair(
+                            split_src,
+                            split_dst,
+                            rel,
+                            status_cb=status_cb,
+                        )
+                else:
+                    install_dst = os.path.join(
+                        mount_usb,
+                        os.path.relpath(install_image, mount_iso),
+                    )
+                    if not os.path.exists(install_dst):
+                        raise FileNotFoundError(
+                            f"Install image missing on USB: {install_dst}"
+                        )
+
+                    _verify_file_pair(
+                        install_image,
+                        install_dst,
+                        os.path.relpath(install_image, mount_iso),
+                        status_cb=status_cb,
+                    )
+
+                _status("Syncing all writes to disk...")
+                run(["sync"])
+                _emit(100)
+
+                _status(
+                    "flash_windows: finished successfully. This Windows USB is UEFI-only."
+                )
+                return True
+
             finally:
-                _status(f"Unmounting {mount_efi} and {mount_data}...")
-                subprocess.run(["sudo", "umount", mount_efi], capture_output=True)
-                subprocess.run(["sudo", "umount", mount_data], capture_output=True)
-                _status("Unmount complete")
+                if mounted_usb:
+                    subprocess.run(["sudo", "umount", mount_usb], check=False)
+                if mounted_iso:
+                    subprocess.run(["sudo", "umount", mount_iso], check=False)
 
-            _status("flash_windows: finished successfully, Windows USB is ready")
-            return True
-
-    except (OSError, subprocess.CalledProcessError) as e:
+    except (OSError, subprocess.CalledProcessError, ValueError, FileNotFoundError) as e:
         log.error("flash_windows: failed: %s", e)
         _status(f"flash_windows: failed: {e}")
         return False
