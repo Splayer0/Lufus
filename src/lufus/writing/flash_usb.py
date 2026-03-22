@@ -1,10 +1,11 @@
 import os
 import re
 import subprocess
+
+from lufus.lufus_logging import get_logger
 from lufus.writing.check_file_sig import check_iso_signature
 from lufus.writing.detect_windows import is_windows_iso
 from lufus.writing.flash_windows import flash_windows
-from lufus.lufus_logging import get_logger
 
 log = get_logger(__name__)
 
@@ -22,25 +23,26 @@ def unexpected():
 
 
 def _strip_partition_suffix(device: str) -> str:
-    """Strip a partition number suffix to get the raw block device.
-
-    Handles NVMe (/dev/nvme0n1p1 -> /dev/nvme0n1), MMC
-    (/dev/mmcblk0p1 -> /dev/mmcblk0), and standard SCSI/SATA/USB
-    (/dev/sdb1 -> /dev/sdb). Returns the input unchanged if no
-    partition suffix is found.
     """
-    # NVMe: /dev/nvmeXnYpZ -> /dev/nvmeXnY
+    Strip a partition number suffix to get the raw block device.
+
+    Handles:
+      /dev/nvme0n1p1 -> /dev/nvme0n1
+      /dev/mmcblk0p1 -> /dev/mmcblk0
+      /dev/sdb1      -> /dev/sdb
+    """
     m = re.match(r"^(/dev/nvme\d+n\d+)p\d+$", device)
     if m:
         return m.group(1)
-    # MMC/eMMC: /dev/mmcblkXpY -> /dev/mmcblkX
+
     m = re.match(r"^(/dev/mmcblk\d+)p\d+$", device)
     if m:
         return m.group(1)
-    # Standard SCSI/SATA/USB: /dev/sdXN -> /dev/sdX
+
     m = re.match(r"^(/dev/sd[a-z])\d+$", device)
     if m:
         return m.group(1)
+
     return device
 
 
@@ -69,19 +71,23 @@ def FlashUSB(iso_path: str, raw_device: str, progress_cb=None, status_cb=None) -
                 return False
             _status("ISO signature check passed")
         else:
-            _status(f"Not an ISO file ({os.path.basename(iso_path)}), skipping ISO signature check")
+            _status(
+                f"Not an ISO file ({os.path.basename(iso_path)}), skipping ISO signature check"
+            )
 
-        _status("Checking if image contains installation markers...")
+        _status("Checking if image contains Windows installation markers...")
         if is_windows_iso(iso_path):
-            _status("OS Installation media detected, routing to flash_windows (ISO mode)")
+            _status(
+                "Windows installation media detected; using the fixed FAT32 + split-WIM writer (UEFI-only)."
+            )
             return flash_windows(
                 raw_device,
                 iso_path,
                 progress_cb=progress_cb,
                 status_cb=status_cb,
             )
-        else:
-            _status("Not a Windows ISO, will use dd for flashing")
+
+        _status("Not a Windows ISO, falling back to raw dd mode")
 
         dd_args = [
             "dd",
@@ -100,7 +106,9 @@ def FlashUSB(iso_path: str, raw_device: str, progress_cb=None, status_cb=None) -
 
         try:
             process = subprocess.Popen(
-                dd_args, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL
+                dd_args,
+                stderr=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
             )
         except FileNotFoundError:
             log.error("Flash failed: 'dd' utility not found. Install coreutils.")
@@ -111,36 +119,48 @@ def FlashUSB(iso_path: str, raw_device: str, progress_cb=None, status_cb=None) -
 
         buf = b""
         last_pct = -1
+
         while True:
             chunk = process.stderr.readline()
             if not chunk:
                 break
+
             buf += chunk
             parts = re.split(rb"[\r\n]", buf)
             buf = parts[-1]
+
             for line in parts[:-1]:
                 line = line.strip()
                 if not line:
                     continue
+
                 m = re.match(rb"^(\d+)\s+bytes", line)
                 if m and iso_size > 0:
                     bytes_done = int(m.group(1))
                     pct = min(int(bytes_done * 100 / iso_size), 99)
+
                     if pct != last_pct:
                         _status(
                             f"dd progress: {bytes_done:,} / {iso_size:,} bytes ({pct}%)"
                         )
                         last_pct = pct
+
                     if progress_cb:
                         progress_cb(pct)
                 else:
-                    log.warning("dd stderr: %s", line.decode("utf-8", errors="replace"))
+                    log.warning(
+                        "dd stderr: %s",
+                        line.decode("utf-8", errors="replace"),
+                    )
 
         process.wait()
         _status(f"dd process exited with return code {process.returncode}")
 
         if process.returncode != 0:
             raise subprocess.CalledProcessError(process.returncode, dd_args)
+
+        if progress_cb:
+            progress_cb(100)
 
         _status(f"dd completed successfully: {iso_path} -> {raw_device}")
         return True
@@ -152,7 +172,8 @@ def FlashUSB(iso_path: str, raw_device: str, progress_cb=None, status_cb=None) -
     except subprocess.CalledProcessError as e:
         log.error(
             "Flash failed with CalledProcessError: returncode=%d, cmd=%s",
-            e.returncode, e.cmd,
+            e.returncode,
+            e.cmd,
         )
         _status(
             f"Flash failed with CalledProcessError: returncode={e.returncode}, cmd={e.cmd}"
