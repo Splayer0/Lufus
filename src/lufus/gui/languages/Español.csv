@@ -84,7 +84,7 @@ dlg_select_image_filter,Imagenes ISO (*.iso);;All Files (*)
 about_content,"Lufus es una utilidad de escritura de discos para Linux hecha en Python.
 
 Inspirado por la herramienta original Rufus para Windows. 
-Version: 1.0.0
+Version: v1.0.0b1
 GitHub: github.com/hog185/lufus"
 Traducción por/translation by: saber_03  :3 
 
