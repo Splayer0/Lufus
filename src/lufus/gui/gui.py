@@ -735,7 +735,7 @@ class lufus(QMainWindow):
         # apply template and set stylesheet
         self._flat_theme = flat_theme
         style_sheet = template.format(**flat_theme)
-        self.setStyleSheet(style_sheet)
+        QApplication.instance().setStyleSheet(style_sheet)
         if hasattr(self, "btn_icon1"):
             self.apply_icons()
 

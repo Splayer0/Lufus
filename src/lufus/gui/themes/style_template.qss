@@ -62,6 +62,47 @@ QComboBox QAbstractItemView {{
     margin: 0px;
 }}
 
+QComboBox QAbstractItemView::item {{
+    background-color: {colors_input_bg};
+    color: {colors_fg};
+    min-height: {dimensions_combo_height}px;
+    padding-left: {dimensions_combo_pad_horizontal}px;
+    padding-right: {dimensions_combo_pad_horizontal}px;
+    padding-top: {dimensions_combo_pad_vertical}px;
+    padding-bottom: {dimensions_combo_pad_vertical}px;
+    border: none;
+}}
+
+QComboBox QAbstractItemView::item:hover {{
+    background-color: {colors_accent};
+    color: {colors_selected_text};
+}}
+
+QComboBox QAbstractItemView::item:selected {{
+    background-color: {colors_accent};
+    color: {colors_selected_text};
+}}
+
+QComboBoxPrivateScroller {{
+    height: 0px;
+    max-height: 0px;
+    border: none;
+    padding: 0px;
+    margin: 0px;
+}}
+
+QComboBoxPrivateContainer {{
+    background-color: {colors_input_bg};
+    border: 1px solid {colors_border_dark};
+    padding: 0px;
+    margin: 0px;
+}}
+
+QComboBoxPrivateContainer QAbstractItemView {{
+    background-color: {colors_input_bg};
+    border: none;
+}}
+
 QComboBox QAbstractItemView,
 QComboBox QAbstractItemView QWidget,
 QComboBox * {{
