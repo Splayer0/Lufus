@@ -17,6 +17,31 @@ log = get_logger(__name__)
 _TOOL_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 
 
+class FilesystemInfo:
+    def __init__(self, fs_id, name, mkfs_tool, mkfs_package, label_tool, label_package):
+        self.fs_id = fs_id
+        self.name = name
+        self.mkfs_tool = mkfs_tool
+        self.mkfs_package = mkfs_package
+        self.label_tool = label_tool
+        self.label_package = label_package
+
+
+_FILESYSTEM_REGISTRY = {
+    0: FilesystemInfo(0, "NTFS", "mkfs.ntfs", "ntfs-3g", "ntfslabel", "ntfs-3g"),
+    1: FilesystemInfo(1, "FAT32", "mkfs.vfat", "dosfstools", "fatlabel", "dosfstools"),
+    2: FilesystemInfo(2, "exFAT", "mkfs.exfat", "exfatprogs", "fatlabel", "exfatprogs"),
+    3: FilesystemInfo(3, "ext4", "mkfs.ext4", "e2fsprogs", "e2label", "e2fsprogs"),
+    4: FilesystemInfo(4, "UDF", "mkfs.udf", "udftools", "udflabel", "udftools"),
+    5: FilesystemInfo(5, "HFS+", "mkfs.hfsplus", "hfsprogs", "hfslabel", "hfsprogs"),
+    6: FilesystemInfo(6, "ext2", "mkfs.ext2", "e2fsprogs", "e2label", "e2fsprogs"),
+    7: FilesystemInfo(7, "ext3", "mkfs.ext3", "e2fsprogs", "e2label", "e2fsprogs"),
+    8: FilesystemInfo(8, "Btrfs", "mkfs.btrfs", "btrfs-progs", "btrfs", "btrfs-progs"),
+    9: FilesystemInfo(9, "XFS", "mkfs.xfs", "xfsprogs", "xfs_admin", "xfsprogs"),
+    10: FilesystemInfo(10, "ZFS", "zpool", "zfsutils-linux", "zpool", "zfsutils-linux"),
+}
+
+
 def _find_tool(name: str) -> str:
     # resolve full path of a system tool, searching sbin dirs pkexec drops
     found = shutil.which(name, path=_TOOL_PATH)
@@ -47,6 +72,26 @@ def _get_raw_device(drive: str) -> str:
     if m:
         return m.group(1)
     return drive
+
+
+def _sanitize_zfs_pool_name(label: str) -> str:
+    """Sanitize a label for use as a ZFS pool name.
+    
+    ZFS pool names must:
+    - Start with a letter
+    - Contain only alphanumeric characters, underscores, hyphens, colons, and periods
+    - Not exceed 256 characters
+    - Not start with 'mirror', 'raidz', 'spare', or reserved keywords
+    """
+    import re
+    safe = re.sub(r'[^a-zA-Z0-9_\-:.]', '_', label)
+    safe = safe[:256]
+    if not safe or not safe[0].isalpha():
+        safe = 'lufus_' + safe
+    reserved = ['mirror', 'raidz', 'raidz1', 'raidz2', 'raidz3', 'spare', 'log', 'cache']
+    if safe.lower() in reserved:
+        safe = 'lufus_' + safe
+    return safe
 
 
 #######
@@ -127,7 +172,6 @@ def remount(drive: str = None):
 #disk formatting
 def volumecustomlabel(target_partition: str = None):
     newlabel = states.new_label
-    # Sanitize label: allow only alphanumeric, spaces, hyphens, and underscores
     import re
     newlabel = re.sub(r'[^a-zA-Z0-9 \-_]', '', newlabel).strip()
     if not newlabel:
@@ -142,25 +186,27 @@ def volumecustomlabel(target_partition: str = None):
         log.error("No drive node found. Cannot relabel.")
         return
 
-    # Sanitize label: strip characters that could be misinterpreted.
-    # Since commands are passed as lists (shell=False), shell injection is not
-    # possible, but we still quote each argument defensively.
     safe_drive = shlex.quote(drive)
     safe_label = shlex.quote(newlabel)
 
-    # 0 -> NTFS, 1 -> FAT32, 2 -> exFAT, 3 -> ext4, 4 -> UDF
     fs_type = getattr(states, 'currentFS', 0)
-    cmd_map = {
-        0: [_find_tool("ntfslabel"), drive, newlabel],
-        1: [_find_tool("fatlabel"), drive, newlabel],
-        2: [_find_tool("fatlabel"), drive, newlabel],
-        3: [_find_tool("e2label"), drive, newlabel],
-        4: [_find_tool("udflabel"), drive, newlabel],
-    }
-    cmd = cmd_map.get(fs_type)
-    if cmd is None:
+    fs_info = _FILESYSTEM_REGISTRY.get(fs_type)
+    
+    if fs_info is None:
         unexpected()
         return
+
+    if fs_type == 10:
+        log.warning("ZFS pools cannot be relabeled after creation. The pool name is set during format.")
+        return
+
+    if fs_type == 8:
+        cmd = [_find_tool(fs_info.label_tool), "filesystem", "label", drive, newlabel]
+    elif fs_type == 9:
+        cmd = [_find_tool(fs_info.label_tool), "-L", newlabel, drive]
+    else:
+        cmd = [_find_tool(fs_info.label_tool), drive, newlabel]
+
     log.info("Applying volume label %r to %s (fs_type=%d)...", newlabel, drive, fs_type)
     try:
         subprocess.run(cmd, check=True)
@@ -300,14 +346,14 @@ def dskformat(status_cb=None) -> bool:
 
     # Get the raw device (whole disk, not partition)
     raw_device = _get_raw_device(drive)
-    
+
     # try:
     #     _status(f"Unmounting {drive} before formatting...")
     #     subprocess.run(["umount", "-l", f"{drive}*"], shell=True, check=True)
     # except subprocess.CalledProcessError:
     #     _status(f"WARNING: Failed to unmount {drive}. It may already be unmounted or in use.")
     # except Exception as e:
-    #     _status(f"WARNING: Unexpected unmount error: {type(e).__name__}: {e}")  
+    #     _status(f"WARNING: Unexpected unmount error: {type(e).__name__}: {e}")
 
     fs_type = getattr(states, 'currentFS', 0)
     clusters = cluster1
@@ -406,13 +452,133 @@ def dskformat(status_cb=None) -> bool:
             _status(f"ERROR (UDF): {type(e).__name__}: {e}")
             return False
 
+    elif fs_type == 5:  # HFS+
+        try:
+            tool = _find_tool("mkfs.hfsplus")
+            cmd = [tool, "-v", "LUFUS_HFS", raw_device]
+            _status(f"Running: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True)
+            _status(f"Successfully formatted {raw_device} as HFS+.")
+        except FileNotFoundError:
+            _status(f"ERROR: mkfs.hfsplus not found. Install hfsprogs.")
+            return False
+        except subprocess.CalledProcessError as e:
+            _status(f"ERROR: mkfs.hfsplus failed (exit {e.returncode}). Is the drive unmounted?")
+            return False
+        except Exception as e:
+            _status(f"ERROR (HFS+): {type(e).__name__}: {e}")
+            return False
+
+    elif fs_type == 6:  # ext2
+        try:
+            tool = _find_tool("mkfs.ext2")
+            cmd = [tool, "-b", str(clusters), raw_device]
+            _status(f"Running: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True)
+            _status(f"Successfully formatted {raw_device} as ext2.")
+        except FileNotFoundError:
+            _status(f"ERROR: mkfs.ext2 not found. Install e2fsprogs.")
+            return False
+        except subprocess.CalledProcessError as e:
+            _status(f"ERROR: mkfs.ext2 failed (exit {e.returncode}). Is the drive unmounted?")
+            return False
+        except Exception as e:
+            _status(f"ERROR (ext2): {type(e).__name__}: {e}")
+            return False
+
+    elif fs_type == 7:  # ext3
+        try:
+            tool = _find_tool("mkfs.ext3")
+            cmd = [tool, "-b", str(clusters), raw_device]
+            _status(f"Running: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True)
+            _status(f"Successfully formatted {raw_device} as ext3.")
+        except FileNotFoundError:
+            _status(f"ERROR: mkfs.ext3 not found. Install e2fsprogs.")
+            return False
+        except subprocess.CalledProcessError as e:
+            _status(f"ERROR: mkfs.ext3 failed (exit {e.returncode}). Is the drive unmounted?")
+            return False
+        except Exception as e:
+            _status(f"ERROR (ext3): {type(e).__name__}: {e}")
+            return False
+
+    elif fs_type == 8:  # Btrfs
+        try:
+            tool = _find_tool("mkfs.btrfs")
+            cmd = [tool, "-L", "LUFUS_BTRFS", raw_device]
+            _status(f"Running: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True)
+            _status(f"Successfully formatted {raw_device} as Btrfs.")
+        except FileNotFoundError:
+            _status(f"ERROR: mkfs.btrfs not found. Install btrfs-progs.")
+            return False
+        except subprocess.CalledProcessError as e:
+            _status(f"ERROR: mkfs.btrfs failed (exit {e.returncode}). Is the drive unmounted?")
+            return False
+        except Exception as e:
+            _status(f"ERROR (Btrfs): {type(e).__name__}: {e}")
+            return False
+
+    elif fs_type == 9:  # XFS
+        try:
+            tool = _find_tool("mkfs.xfs")
+            cmd = [tool, "-f", "-L", "LUFUS_XFS", raw_device]
+            _status(f"Running: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True)
+            _status(f"Successfully formatted {raw_device} as XFS.")
+        except FileNotFoundError:
+            _status(f"ERROR: mkfs.xfs not found. Install xfsprogs.")
+            return False
+        except subprocess.CalledProcessError as e:
+            _status(f"ERROR: mkfs.xfs failed (exit {e.returncode}). Is the drive unmounted?")
+            return False
+        except Exception as e:
+            _status(f"ERROR (XFS): {type(e).__name__}: {e}")
+            return False
+
+    elif fs_type == 10:  # ZFS
+        try:
+            newlabel = getattr(states, 'new_label', 'USB_DRIVE')
+            import re
+            newlabel = re.sub(r'[^a-zA-Z0-9 \-_]', '', newlabel).strip()
+            if not newlabel:
+                newlabel = "USB_DRIVE"
+            
+            pool_name = _sanitize_zfs_pool_name(newlabel)
+            
+            tool = _find_tool("zpool")
+            
+            check_cmd = [tool, "list", pool_name]
+            check_result = subprocess.run(check_cmd, capture_output=True, text=True)
+            if check_result.returncode == 0:
+                _status(f"WARNING: ZFS pool '{pool_name}' already exists. Destroying it first...")
+                destroy_cmd = [tool, "destroy", "-f", pool_name]
+                subprocess.run(destroy_cmd, check=True)
+                _status(f"Existing pool '{pool_name}' destroyed.")
+            
+            cmd = [tool, "create", "-f", pool_name, raw_device]
+            _status(f"Running: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True)
+            _status(f"Successfully created ZFS pool '{pool_name}' on {raw_device}.")
+        except FileNotFoundError:
+            _status(f"ERROR: zpool not found. Install zfsutils-linux.")
+            return False
+        except subprocess.CalledProcessError as e:
+            _status(f"ERROR: zpool create failed (exit {e.returncode}). Is the drive unmounted?")
+            return False
+        except Exception as e:
+            _status(f"ERROR (ZFS): {type(e).__name__}: {e}")
+            return False
+
     else:
         _status(f"ERROR: Unknown fs_type={fs_type}")
+        unexpected()
         return False
 
-    # Apply volume label after successful format
-    _status("Applying volume label to formatted device...")
-    volumecustomlabel(target_partition=raw_device)
+    if fs_type != 10:
+        _status("Applying volume label to formatted device...")
+        volumecustomlabel(target_partition=raw_device)
     return True
 
 

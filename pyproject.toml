@@ -61,6 +61,10 @@ system_runtime_requires = [
     "exfatprogs",
     "e2fsprogs",
     "udftools",
+    "hfsprogs",
+    "btrfs-progs",
+    "xfsprogs",
+    "zfsutils-linux",
 ]
 [tool.briefcase.app.lufus.linux.system.rhel]
 system_requires = [
@@ -73,6 +77,10 @@ system_runtime_requires = [
     "exfatprogs",
     "e2fsprogs",
     "udftools",
+    "hfsplus-tools",
+    "btrfs-progs",
+    "xfsprogs",
+    "zfs",
 ]
 [tool.briefcase.app.lufus.linux.system.suse]
 system_requires = [
@@ -86,6 +94,10 @@ system_runtime_requires = [
     "exfatprogs",
     "e2fsprogs",
     "udftools",
+    "hfsplus-tools",
+    "btrfs-progs",
+    "xfsprogs",
+    "zfs",
 ]
 [tool.briefcase.app.lufus.linux.system.arch]
 system_requires = [
@@ -98,6 +110,10 @@ system_runtime_requires = [
     "exfatprogs",
     "e2fsprogs",
     "udftools",
+    "hfsprogs",
+    "btrfs-progs",
+    "xfsprogs",
+    "zfs-utils",
 ]
 [tool.briefcase.app.lufus.linux.appimage]
 manylinux = "manylinux_2_28"

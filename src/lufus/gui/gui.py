@@ -916,7 +916,7 @@ class lufus(QMainWindow):
         # filesystem cluster and flash option selectors :D
         self.lbl_fs = QLabel(self._T.get("lbl_file_system", "File System"))
         self.combo_fs = QComboBox()
-        self.all_fs_options = ["NTFS", "FAT32", "exFAT", "ext4", "UDF"]
+        self.all_fs_options = ["NTFS", "FAT32", "exFAT", "ext4", "UDF", "HFS+", "ext2", "ext3", "Btrfs", "XFS", "ZFS"]
         self.combo_fs.addItems(["NTFS", "FAT32", "exFAT"])
         self.combo_fs.currentTextChanged.connect(self.updateFS)
 
@@ -1272,7 +1272,7 @@ class lufus(QMainWindow):
         setattr(self, anim_attr, anim)
 
 
-        
+
     def update_check_bad(self):
         # update bad blocks check setting and enable pass selector :3
         states.check_bad = 0 if self.chk_badblocks.isChecked() else 1
@@ -1797,7 +1797,7 @@ class lufus(QMainWindow):
             self.log_message(f"Auto-flash failed to load options: {e}", level="ERROR")
 
     def _start_flash_with_options(self, options: dict) -> None:
-        # start flashworker directly with prebuilt options dict :3  
+        # start flashworker directly with prebuilt options dict :3
         iso_path = options.get("iso_path", "")
         self._flash_start_time = time.monotonic()
         self._flash_total_bytes = os.path.getsize(iso_path) if iso_path and Path(iso_path).exists() else 0
