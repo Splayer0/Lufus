@@ -10,17 +10,25 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from lufus.drives import formatting
-from lufus.drives import states as st
+from unittest.mock import patch
+
+from lufus import state
+
+
+@pytest.fixture(autouse=True)
+def _mock_require_root(monkeypatch):
+    """All formatting tests run as if we have root."""
+    monkeypatch.setattr(formatting, "require_root", lambda: True)
 
 
 def _setup_common_monkeypatch(monkeypatch) -> None:
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {"/media/testuser/USB": "USB"})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: "/dev/sdb1")
-    monkeypatch.setattr(formatting.states, "DN", "/dev/sdb1")
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: "/dev/sdb1")
+    monkeypatch.setattr(formatting.state, "device_node", "/dev/sdb1")
 
 
 # ---------------------------------------------------------------------------
-# _get_raw_device
+# strip_partition_suffix
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
@@ -37,12 +45,12 @@ def _setup_common_monkeypatch(monkeypatch) -> None:
         ("/dev/nvme0n1", "/dev/nvme0n1"),
     ],
 )
-def test_get_raw_device(partition: str, expected_raw: str) -> None:
-    assert formatting._get_raw_device(partition) == expected_raw
+def test_strip_partition_suffix(partition: str, expected_raw: str) -> None:
+    assert formatting.strip_partition_suffix(partition) == expected_raw
 
 
 # ---------------------------------------------------------------------------
-# dskformat
+# disk_format
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
@@ -56,9 +64,9 @@ def test_get_raw_device(partition: str, expected_raw: str) -> None:
 )
 def test_dskformat_runs_expected_mkfs_command(monkeypatch, fs_type: int, expected_tool: str) -> None:
     _setup_common_monkeypatch(monkeypatch)
-    monkeypatch.setattr(formatting.states, "currentFS", fs_type)
-    monkeypatch.setattr(formatting.states, "cluster_size", 0)
-    monkeypatch.setattr(formatting.states, "partition_scheme", 0)
+    monkeypatch.setattr(formatting.state, "filesystem_index", fs_type)
+    monkeypatch.setattr(formatting.state, "cluster_size", 0)
+    monkeypatch.setattr(formatting.state, "partition_scheme", 0)
 
     calls = []
 
@@ -67,44 +75,44 @@ def test_dskformat_runs_expected_mkfs_command(monkeypatch, fs_type: int, expecte
 
     monkeypatch.setattr(formatting.subprocess, "run", fake_run)
 
-    formatting.dskformat()
+    formatting.disk_format()
 
     # Find the mkfs call (partition scheme parted calls come first)
-    mkfs_calls = [c for c in calls if c and c[0].startswith("mkfs")]
+    mkfs_calls = [c for c in calls if c and "mkfs" in c[0]]
     assert len(mkfs_calls) == 1, f"Expected 1 mkfs call, got: {calls}"
-    assert mkfs_calls[0][0] == expected_tool
+    assert expected_tool in mkfs_calls[0][0]
 
 
 def test_dskformat_calls_unexpected_for_unknown_fs(monkeypatch) -> None:
     _setup_common_monkeypatch(monkeypatch)
-    monkeypatch.setattr(formatting.states, "currentFS", 99)
-    monkeypatch.setattr(formatting.states, "cluster_size", 0)
-    monkeypatch.setattr(formatting.states, "partition_scheme", 0)
+    monkeypatch.setattr(formatting.state, "filesystem_index", 99)
+    monkeypatch.setattr(formatting.state, "cluster_size", 0)
+    monkeypatch.setattr(formatting.state, "partition_scheme", 0)
 
-    called = {"unexpected": False}
+    called = {"log_unexpected_error": False}
 
     def fake_unexpected():
-        called["unexpected"] = True
+        called["log_unexpected_error"] = True
 
-    monkeypatch.setattr(formatting, "unexpected", fake_unexpected)
+    monkeypatch.setattr(formatting, "log_unexpected_error", fake_unexpected)
     monkeypatch.setattr(formatting.subprocess, "run", lambda *args, **kwargs: None)
 
-    formatting.dskformat()
+    formatting.disk_format()
 
-    assert called["unexpected"] is True
+    assert called["log_unexpected_error"] is True
 
 
 # ---------------------------------------------------------------------------
-# cluster()
+# get_format_geometry()
 # ---------------------------------------------------------------------------
 
 def test_cluster_returns_tuple_even_without_usb(monkeypatch) -> None:
     """cluster() must never crash — it must always return a valid 3-tuple."""
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: None)
-    monkeypatch.setattr(formatting.states, "DN", "")
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: None)
+    monkeypatch.setattr(formatting.state, "device_node", "")
 
-    result = formatting.cluster()
+    result = formatting.get_format_geometry()
     assert isinstance(result, tuple)
     assert len(result) == 3
     cluster1, cluster2, sector = result
@@ -115,15 +123,15 @@ def test_cluster_returns_tuple_even_without_usb(monkeypatch) -> None:
 
 def test_cluster_respects_cluster_size_state(monkeypatch) -> None:
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {"/media/testuser/USB": "USB"})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: "/dev/sdb1")
-    monkeypatch.setattr(formatting.states, "DN", "/dev/sdb1")
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: "/dev/sdb1")
+    monkeypatch.setattr(formatting.state, "device_node", "/dev/sdb1")
 
-    monkeypatch.setattr(formatting.states, "cluster_size", 0)
-    c1, _, _ = formatting.cluster()
+    monkeypatch.setattr(formatting.state, "cluster_size", 0)
+    c1, _, _ = formatting.get_format_geometry()
     assert c1 == 4096
 
-    monkeypatch.setattr(formatting.states, "cluster_size", 1)
-    c1, _, _ = formatting.cluster()
+    monkeypatch.setattr(formatting.state, "cluster_size", 1)
+    c1, _, _ = formatting.get_format_geometry()
     assert c1 == 8192
 
 
@@ -134,7 +142,7 @@ def test_cluster_respects_cluster_size_state(monkeypatch) -> None:
 def test_apply_partition_scheme_gpt(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(formatting.subprocess, "run", lambda cmd, check=True, **kw: calls.append(cmd))
-    monkeypatch.setattr(formatting.states, "partition_scheme", 0)
+    monkeypatch.setattr(formatting.state, "partition_scheme", 0)
 
     formatting._apply_partition_scheme("/dev/sdb1")
 
@@ -144,7 +152,7 @@ def test_apply_partition_scheme_gpt(monkeypatch) -> None:
 def test_apply_partition_scheme_mbr(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(formatting.subprocess, "run", lambda cmd, check=True, **kw: calls.append(cmd))
-    monkeypatch.setattr(formatting.states, "partition_scheme", 1)
+    monkeypatch.setattr(formatting.state, "partition_scheme", 1)
 
     formatting._apply_partition_scheme("/dev/sdb1")
 
@@ -155,7 +163,7 @@ def test_apply_partition_scheme_uses_raw_device_for_nvme(monkeypatch) -> None:
     """_apply_partition_scheme must use /dev/nvme0n1, not /dev/nvme0n."""
     calls = []
     monkeypatch.setattr(formatting.subprocess, "run", lambda cmd, check=True, **kw: calls.append(cmd))
-    monkeypatch.setattr(formatting.states, "partition_scheme", 0)
+    monkeypatch.setattr(formatting.state, "partition_scheme", 0)
 
     formatting._apply_partition_scheme("/dev/nvme0n1p1")
 
@@ -166,23 +174,23 @@ def test_apply_partition_scheme_uses_raw_device_for_nvme(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# checkdevicebadblock
+# check_device_bad_blocks
 # ---------------------------------------------------------------------------
 
 def test_checkdevicebadblock_returns_false_when_no_drive(monkeypatch) -> None:
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: None)
-    monkeypatch.setattr(formatting.states, "DN", "")
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: None)
+    monkeypatch.setattr(formatting.state, "device_node", "")
 
-    result = formatting.checkdevicebadblock()
+    result = formatting.check_device_bad_blocks()
     assert result is False
 
 
 def test_checkdevicebadblock_returns_true_on_clean_run(monkeypatch) -> None:
-    monkeypatch.setattr(formatting.states, "DN", "/dev/sdb1")
+    monkeypatch.setattr(formatting.state, "device_node", "/dev/sdb1")
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {"/media/testuser/USB": "USB"})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: "/dev/sdb1")
-    monkeypatch.setattr(formatting.states, "check_bad", 0)
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: "/dev/sdb1")
+    monkeypatch.setattr(formatting.state, "check_bad", 0)
 
     class FakeResult:
         returncode = 0
@@ -193,14 +201,14 @@ def test_checkdevicebadblock_returns_true_on_clean_run(monkeypatch) -> None:
         return FakeResult()
 
     monkeypatch.setattr(formatting.subprocess, "run", fake_run)
-    assert formatting.checkdevicebadblock() is True
+    assert formatting.check_device_bad_blocks() is True
 
 
 def test_checkdevicebadblock_returns_false_on_nonzero_exit(monkeypatch) -> None:
-    monkeypatch.setattr(formatting.states, "DN", "/dev/sdb1")
+    monkeypatch.setattr(formatting.state, "device_node", "/dev/sdb1")
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {"/media/testuser/USB": "USB"})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: "/dev/sdb1")
-    monkeypatch.setattr(formatting.states, "check_bad", 0)
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: "/dev/sdb1")
+    monkeypatch.setattr(formatting.state, "check_bad", 0)
 
     class FakeResult:
         returncode = 1
@@ -211,14 +219,14 @@ def test_checkdevicebadblock_returns_false_on_nonzero_exit(monkeypatch) -> None:
         return FakeResult()
 
     monkeypatch.setattr(formatting.subprocess, "run", fake_run)
-    assert formatting.checkdevicebadblock() is False
+    assert formatting.check_device_bad_blocks() is False
 
 
 def test_checkdevicebadblock_returns_false_when_badblocks_not_found(monkeypatch) -> None:
-    monkeypatch.setattr(formatting.states, "DN", "/dev/sdb1")
+    monkeypatch.setattr(formatting.state, "device_node", "/dev/sdb1")
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {"/media/testuser/USB": "USB"})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: "/dev/sdb1")
-    monkeypatch.setattr(formatting.states, "check_bad", 0)
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: "/dev/sdb1")
+    monkeypatch.setattr(formatting.state, "check_bad", 0)
 
     call_count = [0]
 
@@ -234,23 +242,23 @@ def test_checkdevicebadblock_returns_false_when_badblocks_not_found(monkeypatch)
         raise FileNotFoundError("badblocks not found")
 
     monkeypatch.setattr(formatting.subprocess, "run", fake_run)
-    assert formatting.checkdevicebadblock() is False
+    assert formatting.check_device_bad_blocks() is False
 
 
 # ---------------------------------------------------------------------------
-# volumecustomlabel
+# volume_custom_label
 # ---------------------------------------------------------------------------
 
 def test_volumecustomlabel_no_drive_does_not_crash(monkeypatch) -> None:
-    """volumecustomlabel() should gracefully handle missing drive node."""
+    """volume_custom_label() should gracefully handle missing drive node."""
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: None)
-    monkeypatch.setattr(formatting.states, "DN", "")
-    monkeypatch.setattr(formatting.states, "currentFS", 0)
-    monkeypatch.setattr(formatting.states, "new_label", "TESTLABEL")
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: None)
+    monkeypatch.setattr(formatting.state, "device_node", "")
+    monkeypatch.setattr(formatting.state, "filesystem_index", 0)
+    monkeypatch.setattr(formatting.state, "new_label", "TESTLABEL")
 
     # Should not raise
-    formatting.volumecustomlabel()
+    formatting.volume_custom_label()
 
 
 @pytest.mark.parametrize(
@@ -266,10 +274,10 @@ def test_volumecustomlabel_invokes_correct_label_tool(monkeypatch, current_fs, e
     device = "/dev/sdx1"
     label = "TESTLABEL"
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {device: {}})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: device)
-    monkeypatch.setattr(formatting.states, "DN", device)
-    monkeypatch.setattr(formatting.states, "currentFS", current_fs)
-    monkeypatch.setattr(formatting.states, "new_label", label)
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: device)
+    monkeypatch.setattr(formatting.state, "device_node", device)
+    monkeypatch.setattr(formatting.state, "filesystem_index", current_fs)
+    monkeypatch.setattr(formatting.state, "new_label", label)
 
     recorded = {}
 
@@ -277,7 +285,7 @@ def test_volumecustomlabel_invokes_correct_label_tool(monkeypatch, current_fs, e
         recorded["cmd"] = cmd
 
     monkeypatch.setattr(formatting.subprocess, "run", fake_run)
-    formatting.volumecustomlabel()
+    formatting.volume_custom_label()
 
     assert "cmd" in recorded
     cmd = recorded["cmd"]
@@ -289,34 +297,34 @@ def test_volumecustomlabel_invokes_correct_label_tool(monkeypatch, current_fs, e
 def test_volumecustomlabel_handles_pkexec_not_found(monkeypatch) -> None:
     device = "/dev/sdx1"
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {device: {}})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: device)
-    monkeypatch.setattr(formatting.states, "DN", device)
-    monkeypatch.setattr(formatting.states, "currentFS", 0)
-    monkeypatch.setattr(formatting.states, "new_label", "TESTLABEL")
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: device)
+    monkeypatch.setattr(formatting.state, "device_node", device)
+    monkeypatch.setattr(formatting.state, "filesystem_index", 0)
+    monkeypatch.setattr(formatting.state, "new_label", "TESTLABEL")
     monkeypatch.setattr(formatting.subprocess, "run", lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError()))
 
-    called = {"pkexecNotFound": False}
-    monkeypatch.setattr(formatting, "pkexecNotFound", lambda: called.update({"pkexecNotFound": True}))
+    called = {"pkexec_not_found": False}
+    monkeypatch.setattr(formatting, "pkexec_not_found", lambda: called.update({"pkexec_not_found": True}))
 
-    formatting.volumecustomlabel()
-    assert called["pkexecNotFound"] is True
+    formatting.volume_custom_label()
+    assert called["pkexec_not_found"] is True
 
 
 def test_volumecustomlabel_handles_called_process_error(monkeypatch) -> None:
     device = "/dev/sdx1"
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {device: {}})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: device)
-    monkeypatch.setattr(formatting.states, "DN", device)
-    monkeypatch.setattr(formatting.states, "currentFS", 0)
-    monkeypatch.setattr(formatting.states, "new_label", "TESTLABEL")
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: device)
+    monkeypatch.setattr(formatting.state, "device_node", device)
+    monkeypatch.setattr(formatting.state, "filesystem_index", 0)
+    monkeypatch.setattr(formatting.state, "new_label", "TESTLABEL")
     monkeypatch.setattr(formatting.subprocess, "run",
                         lambda cmd, *a, **kw: (_ for _ in ()).throw(CalledProcessError(1, cmd)))
 
-    called = {"FormatFail": False}
-    monkeypatch.setattr(formatting, "FormatFail", lambda: called.update({"FormatFail": True}))
+    called = {"format_fail": False}
+    monkeypatch.setattr(formatting, "format_fail", lambda: called.update({"format_fail": True}))
 
-    formatting.volumecustomlabel()
-    assert called["FormatFail"] is True
+    formatting.volume_custom_label()
+    assert called["format_fail"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -331,8 +339,8 @@ def test_get_mount_and_drive_prefers_states_dn(monkeypatch) -> None:
         return "/dev/should-not-be-used"
 
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {"/media/testuser/USB": "USB"})
-    monkeypatch.setattr(formatting.fu, "find_DN", fake_find_DN)
-    monkeypatch.setattr(formatting.states, "DN", "/dev/sdz1")
+    monkeypatch.setattr(formatting.fu, "find_device_node", fake_find_DN)
+    monkeypatch.setattr(formatting.state, "device_node", "/dev/sdz1")
 
     mount, drive, _ = formatting._get_mount_and_drive()
     assert drive == "/dev/sdz1"
@@ -341,8 +349,8 @@ def test_get_mount_and_drive_prefers_states_dn(monkeypatch) -> None:
 
 def test_get_mount_and_drive_falls_back_to_find_dn(monkeypatch) -> None:
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {"/media/testuser/USB": "USB"})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: "/dev/fallback")
-    monkeypatch.setattr(formatting.states, "DN", "")
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: "/dev/fallback")
+    monkeypatch.setattr(formatting.state, "device_node", "")
 
     _, drive, _ = formatting._get_mount_and_drive()
     assert drive == "/dev/fallback"
@@ -352,28 +360,24 @@ def test_get_mount_and_drive_falls_back_to_find_dn(monkeypatch) -> None:
 # unmount / remount
 # ---------------------------------------------------------------------------
 
-def test_unmount_skips_subprocess_when_no_drive(monkeypatch, capsys) -> None:
+def test_unmount_skips_subprocess_when_no_drive(monkeypatch) -> None:
     monkeypatch.setattr(formatting, "_get_mount_and_drive", lambda: (None, None, {}))
 
     def bad_run(*a, **kw):
         raise AssertionError("subprocess.run must not be called")
 
     monkeypatch.setattr(formatting.subprocess, "run", bad_run)
-    formatting.unmount()
-    out = capsys.readouterr()
-    assert out.out or out.err
+    assert formatting.unmount() is False
 
 
-def test_remount_skips_subprocess_when_no_drive(monkeypatch, capsys) -> None:
+def test_remount_skips_subprocess_when_no_drive(monkeypatch) -> None:
     monkeypatch.setattr(formatting, "_get_mount_and_drive", lambda: (None, None, {}))
 
     def bad_run(*a, **kw):
         raise AssertionError("subprocess.run must not be called")
 
     monkeypatch.setattr(formatting.subprocess, "run", bad_run)
-    formatting.remount()
-    out = capsys.readouterr()
-    assert out.out or out.err
+    assert formatting.remount() is False
 
 
 def test_unmount_issues_umount_command(monkeypatch) -> None:
@@ -408,9 +412,9 @@ def test_remount_issues_mount_command(monkeypatch) -> None:
 )
 def test_dskformat_runs_expected_mkfs_command(monkeypatch, fs_type: int, expected_tool: str) -> None:
     _setup_common_monkeypatch(monkeypatch)
-    monkeypatch.setattr(formatting.states, "currentFS", fs_type)
-    monkeypatch.setattr(formatting.states, "cluster_size", 0)
-    monkeypatch.setattr(formatting.states, "partition_scheme", 0)
+    monkeypatch.setattr(formatting.state, "filesystem_index", fs_type)
+    monkeypatch.setattr(formatting.state, "cluster_size", 0)
+    monkeypatch.setattr(formatting.state, "partition_scheme", 0)
 
     calls = []
 
@@ -419,40 +423,31 @@ def test_dskformat_runs_expected_mkfs_command(monkeypatch, fs_type: int, expecte
 
     monkeypatch.setattr(formatting.subprocess, "run", fake_run)
 
-    formatting.dskformat()
+    formatting.disk_format()
 
     # Find the mkfs call (partition scheme parted calls come first)
-    mkfs_calls = [c for c in calls if c and c[0].startswith("mkfs")]
+    mkfs_calls = [c for c in calls if c and "mkfs" in c[0]]
     assert len(mkfs_calls) == 1, f"Expected 1 mkfs call, got: {calls}"
-    assert mkfs_calls[0][0] == expected_tool
+    assert expected_tool in mkfs_calls[0][0]
 
 
 def test_dskformat_calls_unexpected_for_unknown_fs(monkeypatch) -> None:
     _setup_common_monkeypatch(monkeypatch)
-    monkeypatch.setattr(formatting.states, "currentFS", 99)
-    monkeypatch.setattr(formatting.states, "cluster_size", 0)
-    monkeypatch.setattr(formatting.states, "partition_scheme", 0)
-
-    called = {"unexpected": False}
-
-    def fake_unexpected():
-        called["unexpected"] = True
-
-    monkeypatch.setattr(formatting, "unexpected", fake_unexpected)
+    monkeypatch.setattr(formatting.state, "filesystem_index", 99)
+    monkeypatch.setattr(formatting.state, "cluster_size", 0)
+    monkeypatch.setattr(formatting.state, "partition_scheme", 0)
     monkeypatch.setattr(formatting.subprocess, "run", lambda *args, **kwargs: None)
 
-    formatting.dskformat()
-
-    assert called["unexpected"] is True
+    assert formatting.disk_format() is False
 
 
 def test_cluster_returns_tuple_even_without_usb(monkeypatch) -> None:
     """cluster() must never crash — it must always return a valid 3-tuple."""
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: None)
-    monkeypatch.setattr(formatting.states, "DN", "")
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: None)
+    monkeypatch.setattr(formatting.state, "device_node", "")
 
-    result = formatting.cluster()
+    result = formatting.get_format_geometry()
     assert isinstance(result, tuple)
     assert len(result) == 3
     cluster1, cluster2, sector = result
@@ -463,22 +458,22 @@ def test_cluster_returns_tuple_even_without_usb(monkeypatch) -> None:
 
 def test_cluster_respects_cluster_size_state(monkeypatch) -> None:
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {"/media/testuser/USB": "USB"})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: "/dev/sdb1")
-    monkeypatch.setattr(formatting.states, "DN", "/dev/sdb1")
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: "/dev/sdb1")
+    monkeypatch.setattr(formatting.state, "device_node", "/dev/sdb1")
 
-    monkeypatch.setattr(formatting.states, "cluster_size", 0)
-    c1, _, _ = formatting.cluster()
+    monkeypatch.setattr(formatting.state, "cluster_size", 0)
+    c1, _, _ = formatting.get_format_geometry()
     assert c1 == 4096
 
-    monkeypatch.setattr(formatting.states, "cluster_size", 1)
-    c1, _, _ = formatting.cluster()
+    monkeypatch.setattr(formatting.state, "cluster_size", 1)
+    c1, _, _ = formatting.get_format_geometry()
     assert c1 == 8192
 
 
 def test_apply_partition_scheme_gpt(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(formatting.subprocess, "run", lambda cmd, check=True, **kw: calls.append(cmd))
-    monkeypatch.setattr(formatting.states, "partition_scheme", 0)
+    monkeypatch.setattr(formatting.state, "partition_scheme", 0)
 
     formatting._apply_partition_scheme("/dev/sdb1")
 
@@ -488,7 +483,7 @@ def test_apply_partition_scheme_gpt(monkeypatch) -> None:
 def test_apply_partition_scheme_mbr(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(formatting.subprocess, "run", lambda cmd, check=True, **kw: calls.append(cmd))
-    monkeypatch.setattr(formatting.states, "partition_scheme", 1)
+    monkeypatch.setattr(formatting.state, "partition_scheme", 1)
 
     formatting._apply_partition_scheme("/dev/sdb1")
 
@@ -497,20 +492,29 @@ def test_apply_partition_scheme_mbr(monkeypatch) -> None:
 
 def test_checkdevicebadblock_returns_false_when_no_drive(monkeypatch) -> None:
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: None)
-    monkeypatch.setattr(formatting.states, "DN", "")
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: None)
+    monkeypatch.setattr(formatting.state, "device_node", "")
 
-    result = formatting.checkdevicebadblock()
+    result = formatting.check_device_bad_blocks()
     assert result is False
 
 
 def test_volumecustomlabel_no_drive_does_not_crash(monkeypatch) -> None:
-    """volumecustomlabel() should gracefully handle missing drive node."""
+    """volume_custom_label() should gracefully handle missing drive node."""
     monkeypatch.setattr(formatting.fu, "find_usb", lambda: {})
-    monkeypatch.setattr(formatting.fu, "find_DN", lambda: None)
-    monkeypatch.setattr(formatting.states, "DN", "")
-    monkeypatch.setattr(formatting.states, "currentFS", 0)
-    monkeypatch.setattr(formatting.states, "new_label", "TESTLABEL")
+    monkeypatch.setattr(formatting.fu, "find_device_node", lambda: None)
+    monkeypatch.setattr(formatting.state, "device_node", "")
+    monkeypatch.setattr(formatting.state, "filesystem_index", 0)
+    monkeypatch.setattr(formatting.state, "new_label", "TESTLABEL")
 
     # Should not raise
-    formatting.volumecustomlabel()
+    formatting.volume_custom_label()
+
+
+def test_disk_format_requires_root(monkeypatch):
+    """disk_format should return False without calling mkfs when not root."""
+    monkeypatch.setattr(formatting, "require_root", lambda: False)
+    calls = []
+    monkeypatch.setattr(formatting.subprocess, "run", lambda *a, **kw: calls.append(a))
+    assert formatting.disk_format() is False
+    assert len(calls) == 0

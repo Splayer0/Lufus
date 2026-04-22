@@ -1,9 +1,35 @@
-# This project was generated with 0.4.1 using template: https://github.com/beeware/briefcase-template @ v0.4.1
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lufus"
+version = "1.0.1b1"  # keep synced with [tool.briefcase] version
+description = "A rufus clone written in Python and designed to work with Linux."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = [
+    "psutil>=7.2",
+    "pyqt6>=6.8.0",
+    "pyudev>=0.24.4",
+    "packaging",
+    "platformdirs>=4.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/Hog185/Lufus"
+Repository = "https://github.com/Hog185/Lufus.git"
+Issues = "https://github.com/Hog185/Lufus/issues"
+Documentation = "https://splayer.4plt.ch/lufus/"
+
+[project.gui-scripts]
+lufus = "lufus.__main__:main"
+
 [tool.briefcase]
 project_name = "Lufus"
 bundle = "com.github.hog185"
-# keep version synced with version in [project]
-version = "1.0.0b1"
+version = "1.0.1b1"  # keep synced with [project] version
 url = "https://github.com/Hog185/Lufus"
 license.file = "LICENSE"
 author = "Hog185"
@@ -33,29 +59,27 @@ test_requires = [
 ]
 [tool.briefcase.app.lufus.macOS]
 universal_build = true
-# As of Pyside 6.8, PySide enforces a macOS 12 minimum on wheels.
-min_os_version = "12.0"
-requires = [
-    "std-nslog~=1.0.3",
-]
+min_os_version = "12.0"  # PyQt6 6.8+ requires macOS 12
+requires = ["std-nslog~=1.0.3"]
+
+# Linux
+
 [tool.briefcase.app.lufus.linux]
-requires = [
-]
+requires = []
+
 [tool.briefcase.app.lufus.linux.system.debian]
-system_requires = [
-]
+system_requires = []
 system_runtime_requires = [
+    # Qt / display
     "libgl1",
     "libqt6dbus6",
     "libqt6gui6",
     "libxcb-cursor0",
-    # The following packages are explicit dependencies on recent Debian-based
-    # distros, but not on Ubuntu 22.04.
     "libxcb-icccm4",
     "libxcb-keysyms1",
     "libxcb-shape0",
     "libxkbcommon-x11-0",
-    # filesystem formatting tools
+    # filesystem tools
     "dosfstools",
     "ntfs-3g",
     "exfatprogs",
@@ -64,12 +88,12 @@ system_runtime_requires = [
     "btrfs-progs",
     "xfsprogs",
 ]
+
 [tool.briefcase.app.lufus.linux.system.rhel]
-system_requires = [
-]
+system_requires = []
 system_runtime_requires = [
     "qt6-qtbase-gui",
-    # filesystem formatting tools
+    # filesystem tools
     "dosfstools",
     "ntfs-3g",
     "exfatprogs",
@@ -79,13 +103,13 @@ system_runtime_requires = [
     "btrfs-progs",
     "xfsprogs",
 ]
+
 [tool.briefcase.app.lufus.linux.system.suse]
-system_requires = [
-]
+system_requires = []
 system_runtime_requires = [
     "libgthread-2_0-0",
     "libQt6Gui6",
-    # filesystem formatting tools
+    # filesystem tools
     "dosfstools",
     "ntfs-3g",
     "exfatprogs",
@@ -94,12 +118,12 @@ system_runtime_requires = [
     "btrfs-progs",
     "xfsprogs",
 ]
+
 [tool.briefcase.app.lufus.linux.system.arch]
-system_requires = [
-]
+system_requires = []
 system_runtime_requires = [
     "qt6-base",
-    # filesystem formatting tools
+    # filesystem tools
     "dosfstools",
     "ntfs-3g",
     "exfatprogs",
@@ -108,28 +132,33 @@ system_runtime_requires = [
     "btrfs-progs",
     "xfsprogs",
 ]
+
 [tool.briefcase.app.lufus.linux.appimage]
 manylinux = "manylinux_2_28"
-system_requires = [
-    #AppImage seemingly fails without this here so...
-]
-linuxdeploy_plugins = [
-]
+system_requires = []  # AppImage needs this section present
+linuxdeploy_plugins = []
+
 [tool.briefcase.app.lufus.linux.flatpak]
 flatpak_runtime = "org.kde.Platform"
 flatpak_runtime_version = "6.9"
 flatpak_sdk = "org.kde.Sdk"
+
+# Unsupported platforms
+
 [tool.briefcase.app.lufus.windows]
-requires = [
-]
-# Mobile deployments
+requires = []
+
 [tool.briefcase.app.lufus.iOS]
 supported = false
+
 [tool.briefcase.app.lufus.android]
 supported = false
-# Web deployments
+
 [tool.briefcase.app.lufus.web]
 supported = false
+
+# Project metadata
+
 [tool.lufus.metadata]
 variant = "Alpha Testing 'FOV' Fork"
 commit_date = 2026-03-26

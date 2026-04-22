@@ -6,7 +6,8 @@ import tempfile
 import contextlib
 import re
 import time
-from lufus.drives import states
+from typing import TypedDict
+from lufus import state
 from lufus.lufus_logging import get_logger
 from lufus.writing.partition_scheme import PartitionScheme
 
@@ -14,12 +15,18 @@ from lufus.writing.partition_scheme import PartitionScheme
 log = get_logger(__name__)
 
 
-def run(cmd):
+class PartitionInfo(TypedDict):
+    role: str
+    path: str
+
+
+def run_cmd(cmd):
     """Wrapper for subprocess.run with logging and error checking."""
     log.debug("run: %s", cmd)
     subprocess.run(cmd, check=True)
 
-def stats(msg:str):
+def _status_print(msg: str):
+    """Log and print a status message (used during ISO mounting)."""
     log.info(msg)
     print(msg)
 
@@ -70,14 +77,14 @@ def _fix_efi_bootloader(efi_mount):
         "EFI bootloader fix: BOOTX64.EFI not found, will attempt to create at %s", boot_dir
     )
     bootx64 = os.path.join(boot_dir, "BOOTX64.EFI")
-    run(["sudo", "mkdir", "-p", boot_dir])
+    run_cmd(["sudo", "mkdir", "-p", boot_dir])
     log.info("EFI bootloader fix: created directory %s", boot_dir)
 
     src = _find_path_case_insensitive(
         efi_mount, "EFI", "Microsoft", "Boot", "bootmgfw.efi"
     )
     if src:
-        run(["sudo", "cp", src, bootx64])
+        run_cmd(["sudo", "cp", src, bootx64])
         log.info("EFI bootloader fix: copied %s -> %s", src, bootx64)
         return
 
@@ -172,7 +179,7 @@ def _find_ntfs_tool(status_cb=None) -> str | None:
     ]
     for pm_cmd in pkg_managers:
         if subprocess.run(["which", pm_cmd[0]], capture_output=True).returncode == 0:
-            run(["sudo"] + pm_cmd)
+            run_cmd(["sudo"] + pm_cmd)
             break
 
     for candidate in ["mkfs.ntfs", "mkntfs"]:
@@ -194,7 +201,7 @@ def _ensure_wimlib(status_cb=None) -> None:
     ]
     for pm_cmd in pkg_managers:
         if subprocess.run(["which", pm_cmd[0]], capture_output=True).returncode == 0:
-            run(["sudo"] + pm_cmd)
+            run_cmd(["sudo"] + pm_cmd)
             break
     if subprocess.run(["which", "wimlib-imagex"], capture_output=True).returncode != 0:
         raise FileNotFoundError(
@@ -202,9 +209,95 @@ def _ensure_wimlib(status_cb=None) -> None:
             "sudo pacman -S wimlib  /  sudo apt install wimtools"
         )
             
+
+
+def _copy_with_wim_split(iso_mount, mount_data, extract_used, _status, _emit):
+    """Copy ISO contents to FAT32 partition, splitting install.wim if >4GiB."""
+    top_level_items = [i for i in os.listdir(iso_mount) if i.lower() != 'sources']
+    items = [os.path.join(iso_mount, i) for i in top_level_items]
+    _copy_tree_with_progress(
+        src_items=items, dst=mount_data, total_bytes=extract_used,
+        status_cb=_status, progress_cb=_emit, base_pct=22, end_pct=60,
+    )
+
+    src_sources = _find_path_case_insensitive(iso_mount, 'sources')
+    dst_sources = os.path.join(mount_data, 'sources')
+    os.makedirs(dst_sources, exist_ok=True)
+    non_wim_sources = [
+        os.path.join(src_sources, f) for f in os.listdir(src_sources)
+        if f.lower() not in ('install.wim', 'install.esd')
+    ]
+    _copy_tree_with_progress(
+        src_items=non_wim_sources, dst=dst_sources, total_bytes=extract_used,
+        status_cb=_status, progress_cb=_emit, base_pct=60, end_pct=70,
+    )
+
+    wim_src = (_find_path_case_insensitive(iso_mount, 'sources', 'install.wim')
+               or _find_path_case_insensitive(iso_mount, 'sources', 'install.esd'))
+    wim_dst = os.path.join(dst_sources, 'install.swm')
+    _status(f'Splitting {wim_src} -> {wim_dst} (max 3.8 GiB chunks)...')
+    _ensure_wimlib(status_cb=_status)
+    run_cmd(['wimlib-imagex', 'split', wim_src, wim_dst, str(int(3.8 * 1024))])
+    _status('WIM split complete')
+    _emit(75)
+
+
+def _copy_direct(iso_mount, mount_data, extract_used, _status, _emit):
+    """Copy all ISO contents directly (no WIM splitting needed)."""
+    items = [os.path.join(iso_mount, i) for i in os.listdir(iso_mount)]
+    _copy_tree_with_progress(
+        src_items=items, dst=mount_data, total_bytes=extract_used,
+        status_cb=_status, progress_cb=_emit, base_pct=22, end_pct=75,
+    )
+    _status('Copy to data partition complete')
+    _emit(75)
+
+
+def _copy_efi_boot_files(iso_mount, mount_efi, _status):
+    """Copy EFI boot files from ISO to the EFI partition."""
+    _status('Copying EFI boot files to EFI partition...')
+
+    efi_src = _find_path_case_insensitive(iso_mount, 'EFI')
+    if efi_src:
+        efi_items = os.listdir(efi_src)
+        _status(f'Found EFI/ with {len(efi_items)} items: {efi_items}')
+        run_cmd(['sudo', 'cp', '-r'] + [os.path.join(efi_src, i) for i in efi_items] + [mount_efi])
+        _status('Copied EFI/ tree to EFI partition')
+    else:
+        _status('WARNING: No EFI directory found in ISO - drive may not be UEFI bootable')
+
+    boot_src = _find_path_case_insensitive(iso_mount, 'boot')
+    if boot_src:
+        run_cmd(['sudo', 'cp', '-r'] + [os.path.join(boot_src, i) for i in os.listdir(boot_src)] + [mount_efi])
+        _status('Copied boot/ tree to EFI partition')
+
+    for fname in ['bootmgr', 'bootmgr.efi']:
+        src = _find_path_case_insensitive(iso_mount, fname)
+        if src:
+            run_cmd(['sudo', 'cp', src, f'{mount_efi}/{fname}'])
+            _status(f'Copied {fname} to EFI partition root')
+
+    _fix_efi_bootloader(mount_efi)
+
+
 def flash_windows(device: str, iso: str, scheme: PartitionScheme, progress_cb=None, status_cb=None) -> bool:
-    if not re.match(r"^/dev/(sd[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)$", device):
-        raise ValueError(f"Invalid device path: {device}")
+    """Flash a Windows ISO to a USB device.
+
+    Args:
+        device: Block device path (e.g. /dev/sdb).
+        iso: Path to the Windows ISO file.
+        scheme: Partition scheme to use.
+        progress_cb: Optional callback(int) for progress percentage.
+        status_cb: Optional callback(str) for status messages.
+
+    Returns:
+        True on success, False on any failure.
+
+    Raises:
+        ValueError: If device path doesn't match expected patterns.
+    """
+    if not re.match(r'^/dev/(sd[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)$', device):
+        raise ValueError(f'Invalid device path: {device}')
 
     def _emit(pct):
         if progress_cb:
@@ -215,247 +308,127 @@ def flash_windows(device: str, iso: str, scheme: PartitionScheme, progress_cb=No
         if status_cb:
             status_cb(msg)
 
-    _status(f"flash_windows: starting for device={device}, iso={iso}")
-
+    _status(f'flash_windows: starting for device={device}, iso={iso}')
     iso_mount = None
 
     try:
-        # --- Step 1: Mount ISO directly (no extraction needed) ---
-        _status(f"Mounting ISO {iso}...")
+        # Step 1: Mount ISO
+        _status(f'Mounting ISO {iso}...')
         iso_mount = mount_iso(iso)
         if iso_mount is None:
-            _status("flash_windows: failed to mount ISO")
+            _status('flash_windows: failed to mount ISO')
             return False
-        _status(f"ISO mounted at {iso_mount}")
+        _status(f'ISO mounted at {iso_mount}')
         _emit(8)
 
-        # --- Step 2: Partition the drive ---
-        _status(f"Wiping existing partition table on {device}...")
-        run(["sudo", "wipefs", "-a", device])
-
-        _status(f"Creating partitions on {device} with scheme {scheme.name}...")
+        # Step 2: Partition the drive
+        _status(f'Wiping existing partition table on {device}...')
+        run_cmd(['sudo', 'wipefs', '-a', device])
+        _status(f'Creating partitions on {device} with scheme {scheme.name}...')
         partitions = create_partitions(device, scheme)
         if not partitions:
-            _status("flash_windows: partitioning failed")
+            _status('flash_windows: partitioning failed')
             return False
-
-        efi_part = next((p["path"] for p in partitions if p["role"] == "efi"), None)
-        data_part = next((p["path"] for p in partitions if p["role"] == "data"), None)
-
+        efi_part = next((p['path'] for p in partitions if p['role'] == 'efi'), None)
+        data_part = next((p['path'] for p in partitions if p['role'] == 'data'), None)
         if not data_part:
-            _status("flash_windows: no data partition found after partitioning")
+            _status('flash_windows: no data partition found after partitioning')
             return False
-
-        _status(f"Partitions: EFI={efi_part}, data={data_part}")
-        run(["sudo", "udevadm", "settle"])
+        _status(f'Partitions: EFI={efi_part}, data={data_part}')
+        run_cmd(['sudo', 'udevadm', 'settle'])
         _emit(15)
 
-        # --- Step 3: Format partitions ---        
+        # Step 3: Format partitions
         if scheme == PartitionScheme.WINDOWS_NTFS:
             ntfs_cmd = _find_ntfs_tool(status_cb=_status)
             if ntfs_cmd is None:
-                raise FileNotFoundError("mkfs.ntfs / mkntfs not found. Install ntfs-3g.")
-            _status(f"Formatting {data_part} as {scheme.name}...")
-            run(["sudo", ntfs_cmd, "-f", "-L", "WINDOWS", data_part])
+                raise FileNotFoundError('mkfs.ntfs / mkntfs not found. Install ntfs-3g.')
+            _status(f'Formatting {data_part} as {scheme.name}...')
+            run_cmd(['sudo', ntfs_cmd, '-f', '-L', 'WINDOWS', data_part])
         elif scheme == PartitionScheme.WINDOWS_EXFAT:
-            _status(f"Formatting {data_part} as {scheme.name}...")
-            run(["sudo", "mkfs.exfat", "-n", "WINDOWS", data_part])
+            _status(f'Formatting {data_part} as {scheme.name}...')
+            run_cmd(['sudo', 'mkfs.exfat', '-n', 'WINDOWS', data_part])
         elif scheme == PartitionScheme.SIMPLE_FAT32:
-            _status(f"Formatting {efi_part} as FAT32 with label WINDOWS...")
-            run(["sudo", "mkfs.vfat", "-F32", "-n", "WINDOWS", data_part])
+            _status(f'Formatting {data_part} as FAT32...')
+            run_cmd(['sudo', 'mkfs.vfat', '-F32', '-n', 'WINDOWS', data_part])
 
         if efi_part and scheme in (PartitionScheme.WINDOWS_NTFS, PartitionScheme.WINDOWS_EXFAT):
-
             uefi_ntfs_img = find_uefi_ntfs_img(status_cb=_status)
-            run(["sudo", "dd", f"if={uefi_ntfs_img}", f"of={efi_part}", "bs=1M", "status=none"])
-
+            run_cmd(['sudo', 'dd', f'if={uefi_ntfs_img}', f'of={efi_part}', 'bs=1M', 'status=none'])
         _emit(22)
 
-        # --- Step 4: Mount target partitions and copy files ---
-        with (
-        
-            tempfile.TemporaryDirectory() as mount_data,
-        ):
+        # Step 4: Mount targets and copy files
+        with tempfile.TemporaryDirectory() as mount_data:
+            mount_efi = None
             if efi_part and scheme == PartitionScheme.SIMPLE_FAT32:
                 mount_efi = tempfile.mkdtemp()
-                run(["sudo", "mount", efi_part, mount_efi])
-            else:
-                mount_efi=None
+                run_cmd(['sudo', 'mount', efi_part, mount_efi])
 
-            _status(f"Mounting {data_part} -> {mount_data}")
-            run(["sudo", "mount", data_part, mount_data])
+            _status(f'Mounting {data_part} -> {mount_data}')
+            run_cmd(['sudo', 'mount', data_part, mount_data])
 
             try:
-                # --- Step 5: Copy ISO contents ---
-                _status(f"Copying ISO contents from {iso_mount} to {mount_data}...")
-
+                # Step 5: Copy ISO contents
                 extract_used = sum(
                     os.path.getsize(os.path.join(dp, f))
-                    for dp, _, files in os.walk(iso_mount)
-                    for f in files
+                    for dp, _, files in os.walk(iso_mount) for f in files
                 )
                 data_free = shutil.disk_usage(mount_data).free
-                log.info(
-                    "Space check: ISO content %.2f GiB, data partition free %.2f GiB",
-                    extract_used / 1024**3, data_free / 1024**3,
-                )
+                log.info('Space check: ISO content %.2f GiB, data partition free %.2f GiB',
+                         extract_used / 1024**3, data_free / 1024**3)
                 if data_free < extract_used * 1.02:
                     raise OSError(
-                        f"Data partition too small: need {extract_used / 1024**3:.2f} GiB, "
-                        f"only {data_free / 1024**3:.2f} GiB free."
-                    )
+                        f'Data partition too small: need {extract_used / 1024**3:.2f} GiB, '
+                        f'only {data_free / 1024**3:.2f} GiB free.')
 
                 wim_size = _get_wim_size(iso_mount)
-                FAT32_LIMIT = 4 * 1024**3  # 4 GiB
-
-                needs_split = (
-                    scheme == PartitionScheme.SIMPLE_FAT32
-                    and wim_size > FAT32_LIMIT
-                )
+                needs_split = (scheme == PartitionScheme.SIMPLE_FAT32 and wim_size > 4 * 1024**3)
 
                 if needs_split:
-                    _status(
-                        f"install.wim is {wim_size / 1024**3:.2f} GiB — exceeds FAT32 4 GiB limit, "
-                        f"will split with wimlib-imagex"
-                            )
-                    # Copy everything except install.wim directly from the loop mount
-                    top_level_items = [
-                        i for i in os.listdir(iso_mount)
-                            if i.lower() != "sources"
-                                        ]
-                    items = [os.path.join(iso_mount, i) for i in top_level_items]
-                    _copy_tree_with_progress(
-                    src_items=items,
-                    dst=mount_data,
-                    total_bytes=extract_used,  # slight overcount, acceptable for progress
-                    status_cb=_status,
-                    progress_cb=_emit,
-                    base_pct=22,
-                    end_pct=60,
-                                            )
-
-                    # Copy sources/ minus install.wim
-                    src_sources = _find_path_case_insensitive(iso_mount, "sources")
-                    dst_sources = os.path.join(mount_data, "sources")
-                    os.makedirs(dst_sources, exist_ok=True)
-                    non_wim_sources = [
-        os.path.join(src_sources, f)
-        for f in os.listdir(src_sources)
-        if f.lower() not in ("install.wim", "install.esd")
-    ]
-                    _copy_tree_with_progress(
-        src_items=non_wim_sources,
-        dst=dst_sources,
-        total_bytes=extract_used,
-        status_cb=_status,
-        progress_cb=_emit,
-        base_pct=60,
-        end_pct=70,
-    )
-
-                    # Split install.wim into sources/ on data partition
-                    wim_src = _find_path_case_insensitive(iso_mount, "sources", "install.wim") \
-                           or _find_path_case_insensitive(iso_mount, "sources", "install.esd")
-                    wim_dst = os.path.join(dst_sources, "install.swm")
-                    _status(f"Splitting {wim_src} -> {wim_dst} (max 3.8 GiB chunks)...")
-                    _ensure_wimlib(status_cb=_status)
-                    run([
-        "wimlib-imagex", "split",
-        wim_src, wim_dst,
-        str(int(3.8 * 1024)),  # max chunk size in MiB
-    ])
-                    _status("WIM split complete")
-                    _emit(75)
-
+                    _status(f'install.wim is {wim_size / 1024**3:.2f} GiB — exceeds FAT32 limit, will split')
+                    _copy_with_wim_split(iso_mount, mount_data, extract_used, _status, _emit)
                 else:
-                    # No split needed — copy everything straight from the loop mount
-                    top_level_items = os.listdir(iso_mount)
-                    items = [os.path.join(iso_mount, i) for i in top_level_items]
-                    _copy_tree_with_progress(
-        src_items=items,
-        dst=mount_data,
-        total_bytes=extract_used,
-        status_cb=_status,
-        progress_cb=_emit,
-        base_pct=22,
-        end_pct=75,
-    )
-                    _status("Copy to data partition complete")
-                    _emit(75)
+                    _copy_direct(iso_mount, mount_data, extract_used, _status, _emit)
 
-                _status(f"install.wim/esd on data partition: {wim_size / (1024**3):.2f} GiB")
-                # --- Step 6: Copy EFI boot files ---
+                _status(f'install.wim/esd on data partition: {wim_size / 1024**3:.2f} GiB')
+
+                # Step 6: Copy EFI boot files
                 if efi_part and scheme == PartitionScheme.SIMPLE_FAT32:
-                    _status("Copying EFI boot files to EFI partition...")
-
-                    efi_src = _find_path_case_insensitive(iso_mount, "EFI")
-                    if efi_src:
-                        efi_items = os.listdir(efi_src)
-                        _status(f"Found EFI/ with {len(efi_items)} items: {efi_items}")
-                        run(
-                            ["sudo", "cp", "-r"]
-                            + [os.path.join(efi_src, i) for i in efi_items]
-                            + [mount_efi]
-                        )
-                        _status("Copied EFI/ tree to EFI partition")
-                    else:
-                        _status("WARNING: No EFI directory found in ISO - drive may not be UEFI bootable")
-
-                    boot_src = _find_path_case_insensitive(iso_mount, "boot")
-                    if boot_src:
-                        boot_items = os.listdir(boot_src)
-                        _status(f"Found boot/ with {len(boot_items)} items")
-                        run(
-                            ["sudo", "cp", "-r"]
-                            + [os.path.join(boot_src, i) for i in boot_items]
-                            + [mount_efi]
-                        )
-                        _status("Copied boot/ tree to EFI partition")
-
-                    for fname in ["bootmgr", "bootmgr.efi"]:
-                        src = _find_path_case_insensitive(iso_mount, fname)
-                        if src:
-                            run(["sudo", "cp", src, f"{mount_efi}/{fname}"])
-                            _status(f"Copied {fname} to EFI partition root")
-
-                    _fix_efi_bootloader(mount_efi)
+                    _copy_efi_boot_files(iso_mount, mount_efi, _status)
                 _emit(88)
 
-                # --- Step 7: Sync ---
-                _status("Syncing all writes to disk...")
-                run(["sudo", "sync"])
+                # Step 7: Sync
+                _status('Syncing all writes to disk...')
+                run_cmd(['sudo', 'sync'])
                 _emit(97)
-                _status("Sync complete")
+                _status('Sync complete')
 
             except Exception as e:
-                log.error("flash_windows: ERROR - %s: %s", type(e).__name__, e)
-                _status(f"flash_windows: ERROR - {type(e).__name__}: {e}")
+                log.error('flash_windows: ERROR - %s: %s', type(e).__name__, e)
+                _status(f'flash_windows: ERROR - {type(e).__name__}: {e}')
                 raise
             finally:
-                _status("Unmounting target partitions...")
+                _status('Unmounting target partitions...')
                 if mount_efi:
-                    subprocess.run(["sudo", "umount", mount_efi], capture_output=True)
+                    subprocess.run(['sudo', 'umount', mount_efi], capture_output=True)
                     os.rmdir(mount_efi)
-                subprocess.run(["sudo", "umount", mount_data], capture_output=True)
+                subprocess.run(['sudo', 'umount', mount_data], capture_output=True)
+                _status('Unmount complete')
 
-                _status("Unmount complete")
-
-        _status("flash_windows: finished successfully, Windows USB is ready")
+        _status('flash_windows: finished successfully, Windows USB is ready')
         _emit(100)
         return True
 
     except (OSError, subprocess.CalledProcessError) as e:
-        log.error("flash_windows: failed: %s", e)
-        _status(f"flash_windows: failed: {e}")
+        log.error('flash_windows: failed: %s', e)
+        _status(f'flash_windows: failed: {e}')
         return False
-
     finally:
-        # Always unmount the ISO
         if iso_mount and os.path.ismount(iso_mount):
-            _status(f"Unmounting ISO from {iso_mount}...")
-            subprocess.run(["sudo", "umount", iso_mount], capture_output=True)
-            
-            
+            _status(f'Unmounting ISO from {iso_mount}...')
+            subprocess.run(['sudo', 'umount', iso_mount], capture_output=True)
+
+
 # ---new---
 def mount_iso(iso_path:str)->str|None:
     """This function mounts an iso file at /mnt/iso/ and returns the location if mount is successfull
@@ -476,22 +449,22 @@ def mount_iso(iso_path:str)->str|None:
     
     try:
         os.makedirs(iso_mount_location,exist_ok=True)
-        stats(f"Mounting {iso_path} in {iso_mount_location}")
+        _status_print(f"Mounting {iso_path} in {iso_mount_location}")
         result=subprocess.run(["sudo","mount","-o","loop",iso_path,iso_mount_location],
                               capture_output=True,
                               text=True)
         
         if result.returncode==0:
-            stats(f"Success: Mounted {iso_path} to {iso_mount_location} successfully!")
+            _status_print(f"Success: Mounted {iso_path} to {iso_mount_location} successfully!")
             return iso_mount_location
         else:
-            stats(f"Failed: Failed to mount {iso_path} to {iso_mount_location} successfully!")
+            _status_print(f"Failed: Failed to mount {iso_path} to {iso_mount_location} successfully!")
 
             return None
     except Exception as e:
-        stats(f"An error occured during mounting iso: {e}")
+        _status_print(f"An error occured during mounting iso: {e}")
         return None
-def create_partitions(drive: str, scheme: PartitionScheme) -> list[dict[str, str]]:
+def create_partitions(drive: str, scheme: PartitionScheme) -> list[PartitionInfo]:
     """
     Unified function to partition a drive based on a selected PartitionScheme.
     Returns a list of created partition paths and their roles.

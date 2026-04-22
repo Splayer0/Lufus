@@ -19,7 +19,7 @@ def test_get_usb_info_returns_empty_when_mount_not_found(monkeypatch) -> None:
         lambda*args, **kwargs: [SimpleNamespace(mountpoint="/mnt/other", device="/dev/sdb1")],
     )
 
-    assert get_usb_info_module.GetUSBInfo("/media/testuser/USB") == {}
+    assert get_usb_info_module.get_usb_info("/media/testuser/USB") is None
 
 
 def test_get_usb_info_returns_expected_dictionary(monkeypatch) -> None:
@@ -41,7 +41,7 @@ def test_get_usb_info_returns_expected_dictionary(monkeypatch) -> None:
 
     monkeypatch.setattr(get_usb_info_module.subprocess, "check_output", fake_check_output)
 
-    result = get_usb_info_module.GetUSBInfo(mount_path)
+    result = get_usb_info_module.get_usb_info(mount_path)
     assert result == {
         "device_node": device_node,
         "label": "MYUSB",
@@ -68,7 +68,7 @@ def test_get_usb_info_uses_mount_basename_when_label_is_empty(monkeypatch) -> No
 
     monkeypatch.setattr(get_usb_info_module.subprocess, "check_output", fake_check_output)
 
-    result = get_usb_info_module.GetUSBInfo(mount_path)
+    result = get_usb_info_module.get_usb_info(mount_path)
     assert result["label"] == "NO_LABEL"
 
 
@@ -87,4 +87,4 @@ def test_get_usb_info_returns_empty_when_lsblk_fails(monkeypatch) -> None:
 
     monkeypatch.setattr(get_usb_info_module.subprocess, "check_output", raise_lsblk_error)
 
-    assert get_usb_info_module.GetUSBInfo(mount_path) == {}
+    assert get_usb_info_module.get_usb_info(mount_path) is None

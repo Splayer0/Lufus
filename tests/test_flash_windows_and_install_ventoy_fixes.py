@@ -11,15 +11,14 @@ import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
-from lufus.writing.partition_scheme import PartitionScheme
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import lufus.writing.flash_windows as fw_module
-from lufus.writing.flash_windows import _get_wim_size, _find_path_case_insensitive
+import lufus.writing.windows.flash as fw_module
+from lufus.writing.windows.flash import _get_wim_size, _find_path_case_insensitive
 import lufus.writing.install_ventoy as iv_module
 from lufus.writing.install_ventoy import download_wimboot, install_grub
 
@@ -28,7 +27,7 @@ class TestFlashWindowsImports:
         """Optional and Callable were imported but never used — removed."""
         import importlib, types
         spec = importlib.util.spec_from_file_location(
-            "fw_check", str(SRC / "lufus/writing/flash_windows.py")
+            "fw_check", str(SRC / "lufus/writing/windows/flash.py")
         )
         mod = importlib.util.module_from_spec(spec)
         # If Optional/Callable were still imported they'd be attributes
@@ -48,11 +47,11 @@ class TestFlashWindowsOsErrorOnMissingIso:
 
     def test_returns_false_when_iso_does_not_exist(self, tmp_path):
         missing_iso = str(tmp_path / "nonexistent.iso")
-        result = fw_module.flash_windows("/dev/sdb", missing_iso, PartitionScheme.WINDOWS_NTFS)
+        result = fw_module.flash_windows("/dev/sdb", missing_iso, fw_module.PartitionScheme.SIMPLE_FAT32)
         assert result is False
 
     def test_returns_false_when_iso_is_a_directory(self, tmp_path):
-        result = fw_module.flash_windows("/dev/sdb", str(tmp_path), PartitionScheme.WINDOWS_NTFS)
+        result = fw_module.flash_windows("/dev/sdb", str(tmp_path), fw_module.PartitionScheme.SIMPLE_FAT32)
         assert result is False
 
 class TestGetWimSizeCaseInsensitive:

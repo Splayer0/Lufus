@@ -108,4 +108,4 @@ def test_find_dn_returns_matching_device_node(monkeypatch) -> None:
         lambda*args, **kwargs: [SimpleNamespace(mountpoint=mount_path, device="/dev/sdd1")],
     )
 
-    assert find_usb_module.find_DN() == "/dev/sdd1"
+    assert find_usb_module.find_device_node() == "/dev/sdd1"

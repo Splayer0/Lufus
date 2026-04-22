@@ -2,13 +2,13 @@ import psutil
 import os
 import subprocess
 import getpass
-from lufus.drives import states
+from lufus import state
 from lufus.lufus_logging import get_logger
 
 log = get_logger(__name__)
 
 
-def _media_directories() -> list:
+def _media_directories() -> list[str]:
     """Return a deduplicated list of candidate USB mount directories.
 
     Scans /media, /run/media, and per-user subdirectories thereof.
@@ -35,7 +35,7 @@ def _media_directories() -> list:
 
 
 ### USB RECOGNITION ###
-def find_usb() -> dict:
+def find_usb() -> dict[str, str]:
     """Return a mapping of mount-path -> volume-label for detected USB drives."""
     usbdict = {}  # DICTIONARY WHERE USB MOUNT PATH IS KEY AND LABEL IS VALUE
 
@@ -68,7 +68,7 @@ def find_usb() -> dict:
 
 
 ### FOR DEVICE NODE ###
-def find_DN() -> str | None:
+def find_device_node() -> str | None:
     """Return the device node for the first detected USB drive, or None."""
     all_directories = _media_directories()
     dir_set = set(all_directories)
@@ -78,9 +78,8 @@ def find_DN() -> str | None:
             continue
         device_node = part.device
         if device_node:
-            states.DN = device_node
-            log.info("find_DN: resolved device node %s", device_node)
+            log.info("find_device_node: resolved device node %s", device_node)
             return device_node
 
-    log.warning("find_DN: no USB device node found")
+    log.warning("find_device_node: no USB device node found")
     return None

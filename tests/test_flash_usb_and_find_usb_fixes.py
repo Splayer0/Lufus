@@ -16,13 +16,14 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 import lufus.writing.flash_usb as flash_usb_module
-from lufus.writing.flash_usb import _strip_partition_suffix, FlashUSB
+from lufus.utils import strip_partition_suffix
+from lufus.writing.flash_usb import flash_usb
 import lufus.drives.find_usb as find_usb_module
 from lufus.drives.find_usb import _media_directories
 
 
 # ---------------------------------------------------------------------------
-# _strip_partition_suffix — BUG: re.sub(r"[0-9]+$") mangled NVMe names
+# strip_partition_suffix — BUG: re.sub(r"[0-9]+$") mangled NVMe names
 # ---------------------------------------------------------------------------
 
 class TestStripPartitionSuffix:
@@ -33,57 +34,57 @@ class TestStripPartitionSuffix:
 
     def test_nvme_partition_stripped_correctly(self):
         # BUG: old code gave '/dev/nvme0n' (stripped '1' from 'n1')
-        assert _strip_partition_suffix("/dev/nvme0n1p1") == "/dev/nvme0n1"
+        assert strip_partition_suffix("/dev/nvme0n1p1") == "/dev/nvme0n1"
 
     def test_nvme_multi_digit_namespace_and_partition(self):
-        assert _strip_partition_suffix("/dev/nvme1n2p3") == "/dev/nvme1n2"
+        assert strip_partition_suffix("/dev/nvme1n2p3") == "/dev/nvme1n2"
 
     def test_mmc_partition_stripped_correctly(self):
-        assert _strip_partition_suffix("/dev/mmcblk0p1") == "/dev/mmcblk0"
+        assert strip_partition_suffix("/dev/mmcblk0p1") == "/dev/mmcblk0"
 
     def test_mmc_multi_digit_partition(self):
-        assert _strip_partition_suffix("/dev/mmcblk1p12") == "/dev/mmcblk1"
+        assert strip_partition_suffix("/dev/mmcblk1p12") == "/dev/mmcblk1"
 
     def test_scsi_single_digit_partition(self):
-        assert _strip_partition_suffix("/dev/sdb1") == "/dev/sdb"
+        assert strip_partition_suffix("/dev/sdb1") == "/dev/sdb"
 
     def test_scsi_multi_digit_partition(self):
-        assert _strip_partition_suffix("/dev/sda10") == "/dev/sda"
+        assert strip_partition_suffix("/dev/sda10") == "/dev/sda"
 
     def test_whole_disk_unchanged(self):
-        assert _strip_partition_suffix("/dev/sdb") == "/dev/sdb"
+        assert strip_partition_suffix("/dev/sdb") == "/dev/sdb"
 
     def test_nvme_whole_disk_unchanged(self):
-        assert _strip_partition_suffix("/dev/nvme0n1") == "/dev/nvme0n1"
+        assert strip_partition_suffix("/dev/nvme0n1") == "/dev/nvme0n1"
 
     def test_unknown_path_unchanged(self):
-        assert _strip_partition_suffix("/dev/loop0") == "/dev/loop0"
+        assert strip_partition_suffix("/dev/loop0") == "/dev/loop0"
 
 
 # ---------------------------------------------------------------------------
-# FlashUSB — BUG: OSError from os.path.getsize propagated instead of False
+# flash_usb — BUG: OSError from os.path.getsize propagated instead of False
 # ---------------------------------------------------------------------------
 
-class TestFlashUSBOsError:
-    """Before the fix, calling FlashUSB with a non-existent iso_path raised
+class Testflash_usbOsError:
+    """Before the fix, calling flash_usb with a non-existent iso_path raised
     OSError (from os.path.getsize). Callers expect a bool return value.
     """
 
     def test_returns_false_when_iso_path_does_not_exist(self, tmp_path):
         missing = str(tmp_path / "nonexistent.iso")
-        result = FlashUSB(missing, "/dev/sdb")
+        result = flash_usb("/dev/sdb", missing)
         assert result is False
 
     def test_returns_false_when_iso_path_is_directory(self, tmp_path):
-        result = FlashUSB(str(tmp_path), "/dev/sdb")
+        result = flash_usb("/dev/sdb", str(tmp_path))
         assert result is False
 
 
 # ---------------------------------------------------------------------------
-# FlashUSB — BUG: FileNotFoundError from Popen propagated instead of False
+# flash_usb — BUG: FileNotFoundError from Popen propagated instead of False
 # ---------------------------------------------------------------------------
 
-class TestFlashUSBDdNotFound:
+class Testflash_usbDdNotFound:
     """Before the fix, if dd was absent, Popen raised FileNotFoundError
     which was not caught — the caller received an exception instead of False.
     """
@@ -108,16 +109,16 @@ class TestFlashUSBDdNotFound:
 
         monkeypatch.setattr(flash_usb_module.subprocess, "Popen", raise_fnf)
 
-        result = FlashUSB(str(iso), "/dev/sdb")
+        result = flash_usb("/dev/sdb", str(iso))
         assert result is False
 
 
 # ---------------------------------------------------------------------------
-# FlashUSB — device stripping uses correct helper (NVMe regression guard)
+# flash_usb — device stripping uses correct helper (NVMe regression guard)
 # ---------------------------------------------------------------------------
 
-class TestFlashUSBNvmeDeviceStrip:
-    """Ensure FlashUSB forwards the correctly stripped NVMe device to dd."""
+class Testflash_usbNvmeDeviceStrip:
+    """Ensure flash_usb forwards the correctly stripped NVMe device to dd."""
 
     def test_nvme_device_stripped_before_dd(self, tmp_path, monkeypatch):
         iso = tmp_path / "test.img"
@@ -145,14 +146,14 @@ class TestFlashUSBNvmeDeviceStrip:
 
         monkeypatch.setattr(flash_usb_module.subprocess, "Popen", FakeProcess)
 
-        FlashUSB(str(iso), "/dev/nvme0n1p1")
+        flash_usb("/dev/nvme0n1p1", str(iso))
 
         dd_of = next((a for a in popen_calls["args"] if a.startswith("of=")), None)
         assert dd_of == "of=/dev/nvme0n1", f"Expected of=/dev/nvme0n1, got {dd_of}"
 
 
 # ---------------------------------------------------------------------------
-# find_usb / find_DN — BUG: duplicated path-scan logic (DRY violation)
+# find_usb / find_device_node — BUG: duplicated path-scan logic (DRY violation)
 # ---------------------------------------------------------------------------
 
 class TestMediaDirectories:
@@ -224,19 +225,19 @@ class TestFindUsbUsesAllPartitions:
         monkeypatch.setattr(find_usb_module.os.path, "exists", lambda p: False)
         monkeypatch.setattr(find_usb_module.os.path, "isdir", lambda p: False)
 
-        find_usb_module.find_DN()
+        find_usb_module.find_device_node()
         assert calls.get("all") is True
 
 
 # ---------------------------------------------------------------------------
-# find_DN — BUG: empty device_node would overwrite states.DN with ""
+# find_device_node — BUG: empty device_node would overwrite states.DN with ""
 # ---------------------------------------------------------------------------
 
 class TestFindDNGuardsEmptyDevice:
-    """find_DN must not write an empty string to states.DN."""
+    """find_device_node must not write an empty string to states.DN."""
 
     def test_empty_device_node_does_not_overwrite_states_dn(self, monkeypatch):
-        import lufus.drives.states as states_mod
+        from lufus import state as state_mod
 
         user = "testuser"
         mount_path = f"/media/{user}/USB"
@@ -259,11 +260,11 @@ class TestFindDNGuardsEmptyDevice:
             lambda*args, **kwargs: [SimpleNamespace(mountpoint=mount_path, device="")],
         )
 
-        states_mod.DN = "/dev/sdb1"  # set a valid value first
-        result = find_usb_module.find_DN()
+        state_mod.device_node = "/dev/sdb1"  # set a valid value first
+        result = find_usb_module.find_device_node()
 
-        assert result is None, "find_DN should return None when device is empty"
-        assert states_mod.DN == "/dev/sdb1", "states.DN must not be overwritten with empty string"
+        assert result is None, "find_device_node should return None when device is empty"
+        assert state_mod.device_node == "/dev/sdb1", "states.DN must not be overwritten with empty string"
 
 
 # ---------------------------------------------------------------------------
@@ -322,4 +323,4 @@ class TestFindUsbHappyPath:
             lambda*args, **kwargs: [SimpleNamespace(mountpoint=mount_path, device="/dev/sdd1")],
         )
 
-        assert find_usb_module.find_DN() == "/dev/sdd1"
+        assert find_usb_module.find_device_node() == "/dev/sdd1"

@@ -5,8 +5,9 @@ import os
 import signal
 import glob
 from lufus.lufus_logging import get_logger, setup_logging
-from lufus.drives import states, formatting as fo
-from lufus.writing.flash_usb import FlashUSB
+from lufus import state
+from lufus.drives import formatting as fo
+from lufus.writing.flash_usb import flash_usb
 
 setup_logging()
 log = get_logger(__name__)
@@ -65,7 +66,8 @@ def main():
 
         # Set all states
         for key, value in options.items():
-            setattr(states, key, value)
+            if hasattr(state, key):
+                setattr(state, key, value)
 
         device_node = options["device"]
         iso_path = options.get("iso_path", "")
@@ -97,10 +99,10 @@ def main():
                 status_cb("Ventoy installation failed")
                 log.error("Ventoy installation failed for device %s", device_node)
         else:  # Windows / Linux / Other / Format Only
-            success = FlashUSB(iso_path, device_node,
+            success = flash_usb(device_node, iso_path,
                                progress_cb=progress_cb, status_cb=status_cb)
 
-        log.info("flash_helper exiting, success=%s", success)
+        log.info("flash_worker exiting, success=%s", success)
         sys.exit(0 if success else 1)
     finally:
         # Remove the PID file when done

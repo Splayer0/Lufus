@@ -1,12 +1,19 @@
 import psutil
 import os
 import subprocess
+from typing import TypedDict
 from lufus.lufus_logging import get_logger
 
 log = get_logger(__name__)
 
 
-def GetUSBInfo(usb_path: str) -> dict:
+class USBDeviceInfo(TypedDict):
+    device_node: str
+    label: str
+    mount_path: str
+
+
+def get_usb_info(usb_path: str) -> USBDeviceInfo | None:
     try:
         normalized_usb_path = os.path.normpath(usb_path)
 
@@ -16,7 +23,7 @@ def GetUSBInfo(usb_path: str) -> dict:
                 break
         else:
             log.warning("Could not find device node for USB path: %s", usb_path)
-            return {}
+            return None
 
         size_output = subprocess.check_output(
             ["lsblk", "-d", "-n", "-b", "-o", "SIZE", device_node],
@@ -48,13 +55,13 @@ def GetUSBInfo(usb_path: str) -> dict:
         return usb_info
     except subprocess.TimeoutExpired as e:
         log.error("Timed out getting USB info for %s: %s", usb_path, e)
-        return {}
+        return None
     except PermissionError:
         log.error("Permission denied when trying to get USB info: %s", usb_path)
-        return {}
+        return None
     except subprocess.CalledProcessError as e:
         log.error("Error getting USB info: %s", e)
-        return {}
+        return None
     except Exception as err:
         log.error("Unexpected error getting USB info: %s", err)
-        return {}
+        return None

@@ -6,15 +6,14 @@ from lufus.drives.find_usb import find_usb
 setup_logging()
 log = get_logger(__name__)
 
-usb_devices = find_usb()
-
 
 def launch_gui_with_usb_data() -> None:
+    usb_devices = find_usb()
     log.info("Launching GUI with USB devices: %s", usb_devices)
 
     from PyQt6.QtWidgets import QApplication
     from PyQt6.QtCore import QTimer
-    from lufus.gui.gui import lufus as LufusWindow
+    from lufus.gui.gui import LufusWindow
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
