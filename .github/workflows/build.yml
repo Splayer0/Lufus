@@ -152,7 +152,7 @@ jobs:
             --add-data "src/lufus/gui/assets:lufus/gui/assets" \
             --add-data "src/lufus/gui/languages:lufus/gui/languages" \
             --add-data "src/lufus/gui/themes:lufus/gui/themes" \
-            --collect-all PyQt6 \
+            --collect-all PySide6 \
             --name "Lufus-x86_64-${{ github.ref_name }}" \
             "src/lufus/__main__.py"
 
